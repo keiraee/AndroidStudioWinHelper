@@ -22,6 +22,14 @@ class DataDirSubEntry {
       sizeHuman: json['sizeHuman'] as String? ?? '',
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'path': path,
+        'exists': exists,
+        'sizeBytes': sizeBytes,
+        'sizeHuman': sizeHuman,
+      };
 }
 
 class DataDirEntry {
@@ -72,6 +80,20 @@ class DataDirEntry {
       activeSource: json['activeSource'] as String? ?? '',
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'category': category,
+        'label': label,
+        'path': path,
+        'version': version,
+        'exists': exists,
+        'sizeBytes': sizeBytes,
+        'sizeHuman': sizeHuman,
+        'notes': notes,
+        'subEntries': subEntries.map((e) => e.toJson()).toList(),
+        'isActive': isActive,
+        'activeSource': activeSource,
+      };
 }
 
 class DataDirScanResult {
@@ -114,6 +136,13 @@ class DataDirScanResult {
       foundCount: _readInt(json['foundCount']),
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'entries': entries.map((e) => e.toJson()).toList(),
+        'totalSizeBytes': totalSizeBytes,
+        'totalSizeHuman': totalSizeHuman,
+        'foundCount': foundCount,
+      };
 }
 
 int _readInt(Object? value) {

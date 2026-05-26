@@ -68,4 +68,31 @@ class AndroidStudioDetectionResult {
   final AndroidStudioSelectionReason? selectionReason;
 
   bool get hasInstalls => installs.isNotEmpty;
+
+  factory AndroidStudioDetectionResult.fromJson(Map<String, dynamic> json) {
+    final rawInstalls = json['installs'];
+    final rawSelected = json['selected'];
+    return AndroidStudioDetectionResult(
+      installs: rawInstalls is List
+          ? rawInstalls
+              .whereType<Map<String, dynamic>>()
+              .map(AndroidStudioInstall.fromJson)
+              .toList()
+          : const [],
+      selected: rawSelected is Map<String, dynamic>
+          ? AndroidStudioInstall.fromJson(rawSelected)
+          : null,
+      selectionReason: json['selectionReason'] is String
+          ? AndroidStudioSelectionReason.values
+              .where((e) => e.name == json['selectionReason'])
+              .firstOrNull
+          : null,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'installs': installs.map((e) => e.toJson()).toList(),
+        if (selected != null) 'selected': selected!.toJson(),
+        if (selectionReason != null) 'selectionReason': selectionReason!.name,
+      };
 }

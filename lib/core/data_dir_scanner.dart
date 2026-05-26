@@ -199,7 +199,11 @@ class DataDirScanner {
 
     final jsonText = resultMatch != null
         ? resultMatch.group(1)!.trim()
-        : stdoutText.trim();
+        : stdoutText
+            .split('\n')
+            .where((line) => !line.trim().startsWith('@@PROGRESS|'))
+            .join('\n')
+            .trim();
 
     if (stderrText.isNotEmpty && jsonText.isEmpty) {
       throw StateError('PowerShell 执行失败：$stderrText');
