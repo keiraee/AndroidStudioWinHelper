@@ -46,6 +46,7 @@ class _DetectPageState extends State<DetectPage> {
   ScanProgress? _storageProgress;
   ScanProgress? _versionProgress;
   String? _error;
+  List<String>? _versionWarnings;
 
   final _versionService = StudioVersionService();
 
@@ -57,6 +58,12 @@ class _DetectPageState extends State<DetectPage> {
     _storageResult = ScanCache.load();
     _installResult = ScanCache.loadInstall();
     _versionResult = ScanCache.loadVersions();
+  }
+
+  @override
+  void dispose() {
+    _versionService.dispose();
+    super.dispose();
   }
 
   Future<void> _runInstallDetect() async {
@@ -117,16 +124,18 @@ class _DetectPageState extends State<DetectPage> {
       _versionLoading = true;
       _versionProgress = const ScanProgress(percent: 0, message: '正在获取版本列表…');
       _error = null;
+      _versionWarnings = null;
     });
 
     try {
-      final versions = await _versionService.fetchVersions();
+      final result = await _versionService.fetchVersions();
       if (!mounted) return;
       setState(() {
-        _versionResult = versions;
+        _versionResult = result.versions;
+        _versionWarnings = result.warnings.isEmpty ? null : result.warnings;
         _versionProgress = const ScanProgress(percent: 100, message: '获取完成');
       });
-      ScanCache.saveVersions(versions);
+      ScanCache.saveVersions(result.versions);
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = error.toString());
@@ -455,6 +464,8 @@ class _DetectPageState extends State<DetectPage> {
           if (_versionLoading && _versionProgress != null)
             _ProgressPanel(progress: _versionProgress!),
           if (_error != null) _ErrorPanel(message: _error!),
+          if (_versionWarnings != null)
+            _WarningPanel(messages: _versionWarnings!),
           Expanded(
             child: _versionResult == null && !_versionLoading
                 ? const _EmptyPanel(
@@ -735,6 +746,62 @@ class _ErrorPanel extends StatelessWidget {
           style: TextStyle(
             color: Theme.of(context).colorScheme.onErrorContainer,
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WarningPanel extends StatelessWidget {
+  const _WarningPanel({required this.messages});
+
+  final List<String> messages;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: colorScheme.tertiaryContainer.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: colorScheme.tertiary.withValues(alpha: 0.3),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.warning_amber_rounded,
+                    size: 18, color: colorScheme.tertiary),
+                const SizedBox(width: 8),
+                Text(
+                  '部分数据源获取失败',
+                  style: TextStyle(
+                    color: colorScheme.onTertiaryContainer,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            for (final msg in messages)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  msg,
+                  style: TextStyle(
+                    color:
+                        colorScheme.onTertiaryContainer.withValues(alpha: 0.8),
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );

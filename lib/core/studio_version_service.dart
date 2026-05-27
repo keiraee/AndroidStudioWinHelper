@@ -21,9 +21,10 @@ class StudioVersionService {
 
   void dispose() => _client.close();
 
-  Future<List<StudioVersion>> fetchVersions() async {
+  Future<FetchVersionsResult> fetchVersions() async {
     // 1. 解析 XML 获取当前版本元数据
     final versions = <StudioVersion>[];
+    final warnings = <String>[];
     final xmlResponse = await _client.get(Uri.parse(_updatesUrl));
     if (xmlResponse.statusCode != 200) {
       throw StateError('获取版本列表失败：HTTP ${xmlResponse.statusCode}');
@@ -66,7 +67,8 @@ class StudioVersionService {
 
     // 2. 抓取下载页面获取实际下载链接（最新版本）
     final downloadUrls = <String, String>{};
-    await _scrapeDownloadUrls(downloadUrls);
+    final scrapeWarnings = await _scrapeDownloadUrls(downloadUrls);
+    warnings.addAll(scrapeWarnings);
 
     // 3. 匹配下载链接到 XML 版本
     for (var i = 0; i < versions.length; i++) {
@@ -78,7 +80,8 @@ class StudioVersionService {
     }
 
     // 4. 从 Chocolatey 补充历史版本
-    final chocoVers = await _fetchChocolateyVersions();
+    final (chocoVers, chocoWarnings) = await _fetchChocolateyVersions();
+    warnings.addAll(chocoWarnings);
     for (final cv in chocoVers) {
       final base = _extractChocoBase(cv);
       if (base.isEmpty) continue;
@@ -107,14 +110,18 @@ class StudioVersionService {
     // 按 version 排序列（新版在前）
     versions.sort((a, b) => b.version.compareTo(a.version));
 
-    return versions;
+    return FetchVersionsResult(versions: versions, warnings: warnings);
   }
 
-  Future<void> _scrapeDownloadUrls(Map<String, String> urls) async {
+  Future<List<String>> _scrapeDownloadUrls(Map<String, String> urls) async {
+    final warnings = <String>[];
     for (final page in [_downloadPage, _previewPage]) {
       try {
         final response = await _client.get(Uri.parse(page));
-        if (response.statusCode != 200) continue;
+        if (response.statusCode != 200) {
+          warnings.add('下载页面获取失败 (HTTP ${response.statusCode}): $page');
+          continue;
+        }
 
         final matches = RegExp(
           r'https://[^"\s]*android-studio[^"\s]*windows[^"\s]*\.exe',
@@ -131,12 +138,16 @@ class StudioVersionService {
             }
           }
         }
-      } catch (_) {}
+      } catch (e) {
+        warnings.add('下载页面抓取异常: $page ($e)');
+      }
     }
+    return warnings;
   }
 
-  Future<List<String>> _fetchChocolateyVersions() async {
+  Future<(List<String>, List<String>)> _fetchChocolateyVersions() async {
     final vers = <String>[];
+    final warnings = <String>[];
     var page = 0;
 
     // Chocolatey API XML 分页
@@ -167,9 +178,11 @@ class StudioVersionService {
         nextUrl = nextMatch?.group(1)?.replaceAll('&amp;', '&');
         page++;
       }
-    } catch (_) {}
+    } catch (e) {
+      warnings.add('Chocolatey 版本获取异常: $e');
+    }
 
-    return vers;
+    return (vers, warnings);
   }
 
   StudioVersion _copyWithUrl(StudioVersion v, String url) {

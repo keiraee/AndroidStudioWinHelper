@@ -280,7 +280,7 @@ class AndroidStudioDetector {
     return value
         .split(RegExp(r'[^0-9]+'))
         .where((part) => part.isNotEmpty)
-        .map(int.parse)
+        .map((s) => int.tryParse(s) ?? 0)
         .toList();
   }
 }

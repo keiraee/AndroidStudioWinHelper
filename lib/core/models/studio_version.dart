@@ -47,3 +47,12 @@ class StudioVersion {
         'isHistorical': isHistorical,
       };
 }
+
+class FetchVersionsResult {
+  const FetchVersionsResult({required this.versions, this.warnings = const []});
+
+  final List<StudioVersion> versions;
+  final List<String> warnings;
+
+  bool get hasWarnings => warnings.isNotEmpty;
+}
