@@ -4,12 +4,15 @@ import 'package:flutter/services.dart';
 
 import 'package:androidstudiowinhelper/core/android_studio_detector.dart';
 import 'package:androidstudiowinhelper/core/data_dir_scanner.dart';
+import 'package:androidstudiowinhelper/core/download_manager.dart';
 import 'package:androidstudiowinhelper/core/models/android_studio_install.dart';
 import 'package:androidstudiowinhelper/core/models/data_dir_entry.dart';
+import 'package:androidstudiowinhelper/core/models/download_task.dart';
 import 'package:androidstudiowinhelper/core/models/scan_progress.dart';
 import 'package:androidstudiowinhelper/core/models/studio_version.dart';
 import 'package:androidstudiowinhelper/core/scan_cache.dart';
 import 'package:androidstudiowinhelper/core/studio_version_service.dart';
+import 'package:androidstudiowinhelper/pages/download_progress_card.dart';
 import 'package:flutter/material.dart';
 
 Future<void> _openInExplorer(String path) async {
@@ -49,6 +52,7 @@ class _DetectPageState extends State<DetectPage> {
   List<String>? _versionWarnings;
 
   final _versionService = StudioVersionService();
+  final _downloadManager = DownloadManager();
 
   bool get _hasCache => _storageResult != null;
 
@@ -63,6 +67,7 @@ class _DetectPageState extends State<DetectPage> {
   @override
   void dispose() {
     _versionService.dispose();
+    _downloadManager.dispose();
     super.dispose();
   }
 
@@ -136,11 +141,34 @@ class _DetectPageState extends State<DetectPage> {
         _versionProgress = const ScanProgress(percent: 100, message: '获取完成');
       });
       ScanCache.saveVersions(result.versions);
+      _recoverDownloads(result.versions);
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = error.toString());
     } finally {
       if (mounted) setState(() => _versionLoading = false);
+    }
+  }
+
+  void _recoverDownloads(List<StudioVersion> versions) {
+    _downloadManager.recoverCompleted(
+      versions.map((v) => v.version).toList(),
+      (vk) => versions.firstWhere((v) => v.version == vk).downloadUrl,
+    );
+  }
+
+  void _handleDownloadAction(StudioVersion v, DownloadAction action) {
+    switch (action) {
+      case DownloadAction.start:
+        _downloadManager.start(v.version, v.downloadUrl);
+      case DownloadAction.pause:
+        _downloadManager.pause(v.version);
+      case DownloadAction.resume:
+        _downloadManager.start(v.version, v.downloadUrl);
+      case DownloadAction.cancel:
+        _downloadManager.cancel(v.version);
+      case DownloadAction.open:
+        _downloadManager.openFile(v.version);
     }
   }
 
@@ -473,10 +501,22 @@ class _DetectPageState extends State<DetectPage> {
                   )
                 : filtered == null || filtered.isEmpty
                     ? const _EmptyPanel(hint: '该渠道暂无版本。')
-                    : ListView(
-                        children: [
-                          for (final v in filtered) _VersionCard(version: v),
-                        ],
+                    : ListenableBuilder(
+                        listenable: _downloadManager,
+                        builder: (context, _) {
+                          return ListView(
+                            children: [
+                              for (final v in filtered)
+                                _VersionCard(
+                                  version: v,
+                                  downloadTask:
+                                      _downloadManager.taskFor(v.version),
+                                  onDownloadAction: (action) =>
+                                      _handleDownloadAction(v, action),
+                                ),
+                            ],
+                          );
+                        },
                       ),
           ),
         ],
@@ -1243,9 +1283,15 @@ String _channelDisplayName(String channel) => switch (channel) {
     };
 
 class _VersionCard extends StatelessWidget {
-  const _VersionCard({required this.version});
+  const _VersionCard({
+    required this.version,
+    this.downloadTask,
+    required this.onDownloadAction,
+  });
 
   final StudioVersion version;
+  final DownloadTask? downloadTask;
+  final void Function(DownloadAction action) onDownloadAction;
 
   @override
   Widget build(BuildContext context) {
@@ -1343,10 +1389,10 @@ class _VersionCard extends StatelessWidget {
                   const SizedBox(height: 12),
                 ],
                 if (version.downloadUrl.isNotEmpty)
-                  FilledButton.icon(
-                    onPressed: () => _openUrl(version.downloadUrl),
-                    icon: const Icon(Icons.download, size: 18),
-                    label: const Text('下载安装包'),
+                  DownloadProgressCard(
+                    task: downloadTask,
+                    onAction: onDownloadAction,
+                    hasUrl: version.downloadUrl.isNotEmpty,
                   ),
               ],
             ),

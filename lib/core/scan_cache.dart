@@ -6,9 +6,12 @@ import 'package:androidstudiowinhelper/core/models/data_dir_entry.dart';
 import 'package:androidstudiowinhelper/core/models/studio_version.dart';
 
 class ScanCache {
+  static String get basePath {
+    return '${Platform.environment['LOCALAPPDATA'] ?? ''}\\AndroidStudioWinHelper';
+  }
+
   static Directory get _cacheDir {
-    final localAppData = Platform.environment['LOCALAPPDATA'] ?? '';
-    final dir = Directory('$localAppData\\AndroidStudioWinHelper');
+    final dir = Directory(basePath);
     if (!dir.existsSync()) {
       dir.createSync(recursive: true);
     }
