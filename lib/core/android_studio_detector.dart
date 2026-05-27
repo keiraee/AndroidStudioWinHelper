@@ -192,7 +192,11 @@ class AndroidStudioDetector {
 
     final jsonText = resultMatch != null
         ? resultMatch.group(1)!.trim()
-        : stdoutText.trim();
+        : stdoutText
+            .split('\n')
+            .where((line) => !line.trim().startsWith('@@PROGRESS|'))
+            .join('\n')
+            .trim();
 
     if (stderrText.isNotEmpty && jsonText.isEmpty) {
       throw StateError('PowerShell 执行失败：$stderrText');
@@ -276,7 +280,7 @@ class AndroidStudioDetector {
     return value
         .split(RegExp(r'[^0-9]+'))
         .where((part) => part.isNotEmpty)
-        .map(int.parse)
+        .map((s) => int.tryParse(s) ?? 0)
         .toList();
   }
 }

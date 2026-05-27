@@ -1,11 +1,26 @@
+import 'dart:io';
+
+import 'package:flutter/services.dart';
+
 import 'package:androidstudiowinhelper/core/android_studio_detector.dart';
 import 'package:androidstudiowinhelper/core/data_dir_scanner.dart';
 import 'package:androidstudiowinhelper/core/models/android_studio_install.dart';
 import 'package:androidstudiowinhelper/core/models/data_dir_entry.dart';
 import 'package:androidstudiowinhelper/core/models/scan_progress.dart';
+import 'package:androidstudiowinhelper/core/models/studio_version.dart';
+import 'package:androidstudiowinhelper/core/scan_cache.dart';
+import 'package:androidstudiowinhelper/core/studio_version_service.dart';
 import 'package:flutter/material.dart';
 
-enum _PageTab { install, storage }
+Future<void> _openInExplorer(String path) async {
+  await Process.start('explorer', [path]);
+}
+
+Future<void> _openUrl(String url) async {
+  await Process.start('cmd', ['/c', 'start', '', url]);
+}
+
+enum _PageTab { install, storage, download }
 
 class DetectPage extends StatefulWidget {
   const DetectPage({super.key});
@@ -22,18 +37,40 @@ class _DetectPageState extends State<DetectPage> {
 
   bool _installLoading = false;
   bool _storageLoading = false;
+  bool _versionLoading = false;
   AndroidStudioDetectionResult? _installResult;
   DataDirScanResult? _storageResult;
+  List<StudioVersion>? _versionResult;
+  String? _selectedChannel; // null = all
   ScanProgress? _installProgress;
   ScanProgress? _storageProgress;
+  ScanProgress? _versionProgress;
   String? _error;
+  List<String>? _versionWarnings;
+
+  final _versionService = StudioVersionService();
+
+  bool get _hasCache => _storageResult != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _storageResult = ScanCache.load();
+    _installResult = ScanCache.loadInstall();
+    _versionResult = ScanCache.loadVersions();
+  }
+
+  @override
+  void dispose() {
+    _versionService.dispose();
+    super.dispose();
+  }
 
   Future<void> _runInstallDetect() async {
     setState(() {
       _installLoading = true;
-      _error = null;
-      _installResult = null;
       _installProgress = const ScanProgress(percent: 0, message: '正在启动检测…');
+      _error = null;
     });
 
     try {
@@ -47,11 +84,9 @@ class _DetectPageState extends State<DetectPage> {
         _installResult = result;
         _installProgress = const ScanProgress(percent: 100, message: '检测完成');
       });
+      ScanCache.saveInstall(result);
     } catch (error) {
-      setState(() {
-        _installResult = null;
-        _error = error.toString();
-      });
+      setState(() => _error = error.toString());
     } finally {
       setState(() => _installLoading = false);
     }
@@ -62,7 +97,7 @@ class _DetectPageState extends State<DetectPage> {
       _storageLoading = true;
       _storageProgress = const ScanProgress(percent: 0, message: '准备开始…');
       _error = null;
-      _storageResult = null;
+      // 不清空 _storageResult，保留旧缓存数据继续展示
     });
 
     try {
@@ -76,13 +111,36 @@ class _DetectPageState extends State<DetectPage> {
         _storageResult = result;
         _storageProgress = const ScanProgress(percent: 100, message: '扫描完成');
       });
+      ScanCache.save(result);
     } catch (error) {
-      setState(() {
-        _storageResult = null;
-        _error = error.toString();
-      });
+      setState(() => _error = error.toString());
     } finally {
       setState(() => _storageLoading = false);
+    }
+  }
+
+  Future<void> _fetchVersions() async {
+    setState(() {
+      _versionLoading = true;
+      _versionProgress = const ScanProgress(percent: 0, message: '正在获取版本列表…');
+      _error = null;
+      _versionWarnings = null;
+    });
+
+    try {
+      final result = await _versionService.fetchVersions();
+      if (!mounted) return;
+      setState(() {
+        _versionResult = result.versions;
+        _versionWarnings = result.warnings.isEmpty ? null : result.warnings;
+        _versionProgress = const ScanProgress(percent: 100, message: '获取完成');
+      });
+      ScanCache.saveVersions(result.versions);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _versionLoading = false);
     }
   }
 
@@ -134,6 +192,14 @@ class _DetectPageState extends State<DetectPage> {
                       selected: _activeTab == _PageTab.storage,
                       onTap: () => setState(() => _activeTab = _PageTab.storage),
                     ),
+                    const SizedBox(height: 12),
+                    _TabTile(
+                      icon: Icons.download_outlined,
+                      title: '版本下载',
+                      subtitle: '获取 Android Studio 最新版本安装包',
+                      selected: _activeTab == _PageTab.download,
+                      onTap: () => setState(() => _activeTab = _PageTab.download),
+                    ),
                     const Spacer(),
                   ],
                 ),
@@ -141,9 +207,11 @@ class _DetectPageState extends State<DetectPage> {
             ),
           ),
           Expanded(
-            child: _activeTab == _PageTab.install
-                ? _buildInstallTab()
-                : _buildStorageTab(),
+            child: switch (_activeTab) {
+              _PageTab.install => _buildInstallTab(),
+              _PageTab.storage => _buildStorageTab(),
+              _PageTab.download => _buildDownloadTab(),
+            },
           ),
         ],
       ),
@@ -163,7 +231,7 @@ class _DetectPageState extends State<DetectPage> {
                 ? '${_installResult!.installs.length} 个安装'
                 : null,
             action: _ActionButton(
-              label: '开始检测',
+              label: _installResult != null ? '重新检测' : '开始检测',
               icon: Icons.refresh,
               loading: _installLoading,
               onPressed: _installLoading ? null : _runInstallDetect,
@@ -195,7 +263,7 @@ class _DetectPageState extends State<DetectPage> {
                 ? '${_storageResult!.foundCount} 项目 · ${_storageResult!.totalSizeHuman}'
                 : null,
             action: _ActionButton(
-              label: '开始扫描',
+              label: _hasCache ? '重新扫描' : '开始扫描',
               icon: Icons.refresh,
               loading: _storageLoading,
               onPressed: _storageLoading ? null : _runStorageScan,
@@ -253,11 +321,166 @@ class _DetectPageState extends State<DetectPage> {
       return const _EmptyPanel(hint: '未找到相关目录。');
     }
 
+    final visibleEntries = _storageResult!.sortedEntries
+        .where((e) => Directory(e.path).existsSync())
+        .toList();
+
+    if (visibleEntries.isEmpty) {
+      return const _EmptyPanel(hint: '未找到相关目录。');
+    }
+
     return ListView(
       children: [
-        for (final entry in _storageResult!.sortedEntries)
+        for (final entry in visibleEntries)
           _StorageEntryTile(entry: entry),
       ],
+    );
+  }
+
+  Widget _buildDownloadTab() {
+    final channels = <String>[];
+    final seen = <String>{};
+    if (_versionResult != null) {
+      for (final v in _versionResult!) {
+        if (seen.add(v.channel)) {
+          channels.add(v.channel);
+        }
+      }
+    }
+
+    final filtered = _versionResult
+        ?.where((v) =>
+            _selectedChannel == null || v.channel == _selectedChannel)
+        .toList();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _SectionHeader(
+            icon: Icons.download_outlined,
+            title: '版本下载',
+            trailing: _versionResult != null
+                ? '${_versionResult!.length} 个版本'
+                : null,
+            action: _ActionButton(
+              label: _versionResult != null ? '重新获取' : '获取版本',
+              icon: Icons.refresh,
+              loading: _versionLoading,
+              onPressed: _versionLoading ? null : _fetchVersions,
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (channels.length > 1)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Wrap(
+                      spacing: 8,
+                      children: [
+                        FilterChip(
+                          label: const Text('全部'),
+                          selected: _selectedChannel == null,
+                          onSelected: (_) =>
+                              setState(() => _selectedChannel = null),
+                        ),
+                        for (final ch in channels)
+                          FilterChip(
+                            label: Text(_channelDisplayName(ch)),
+                            selected: _selectedChannel == ch,
+                            onSelected: (sel) => setState(() =>
+                                _selectedChannel = sel ? ch : null),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () => _openUrl(
+                          'https://developer.android.google.cn/studio/archive?hl=zh-cn',
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.history,
+                                  size: 16,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .primary),
+                              const SizedBox(width: 6),
+                              Text(
+                                '历史版本归档',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .labelMedium
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .primary,
+                                    ),
+                              ),
+                              const SizedBox(width: 4),
+                              Icon(Icons.open_in_new,
+                                  size: 14,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .primary
+                                      .withValues(alpha: 0.6)),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(left: 10, top: 2),
+                        child: Text(
+                          '仅近期版本，更多请访问归档',
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelSmall
+                              ?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withValues(alpha: 0.4),
+                              ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          if (_versionLoading && _versionProgress != null)
+            _ProgressPanel(progress: _versionProgress!),
+          if (_error != null) _ErrorPanel(message: _error!),
+          if (_versionWarnings != null)
+            _WarningPanel(messages: _versionWarnings!),
+          Expanded(
+            child: _versionResult == null && !_versionLoading
+                ? const _EmptyPanel(
+                    hint: '点击右上角「获取版本」获取 Android Studio 官方版本列表',
+                  )
+                : filtered == null || filtered.isEmpty
+                    ? const _EmptyPanel(hint: '该渠道暂无版本。')
+                    : ListView(
+                        children: [
+                          for (final v in filtered) _VersionCard(version: v),
+                        ],
+                      ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -529,6 +752,62 @@ class _ErrorPanel extends StatelessWidget {
   }
 }
 
+class _WarningPanel extends StatelessWidget {
+  const _WarningPanel({required this.messages});
+
+  final List<String> messages;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: colorScheme.tertiaryContainer.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: colorScheme.tertiary.withValues(alpha: 0.3),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.warning_amber_rounded,
+                    size: 18, color: colorScheme.tertiary),
+                const SizedBox(width: 8),
+                Text(
+                  '部分数据源获取失败',
+                  style: TextStyle(
+                    color: colorScheme.onTertiaryContainer,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            for (final msg in messages)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  msg,
+                  style: TextStyle(
+                    color:
+                        colorScheme.onTertiaryContainer.withValues(alpha: 0.8),
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _InstallCard extends StatelessWidget {
   const _InstallCard({
     required this.index,
@@ -643,10 +922,13 @@ class _StorageEntryTile extends StatelessWidget {
   const _StorageEntryTile({required this.entry});
 
   final DataDirEntry entry;
+  static const _sizeWidth = 80.0;
+  static const _actionWidth = 28.0;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
@@ -656,28 +938,23 @@ class _StorageEntryTile extends StatelessWidget {
         title: Row(
           children: [
             Flexible(
-              child: Text(
-                entry.label,
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
+              child: Text(entry.label, style: textTheme.titleSmall),
             ),
-            if (entry.isActive) ...[
+            if (entry.isActive && entry.activeSource.isNotEmpty) ...[
               const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
-                  color: Colors.green.withValues(alpha: 0.15),
+                  color: colorScheme.surfaceContainerHighest,
                   borderRadius: BorderRadius.circular(4),
-                  border: Border.all(
-                    color: Colors.green.withValues(alpha: 0.4),
-                  ),
+                  border: Border.all(color: colorScheme.outlineVariant),
                 ),
                 child: Text(
-                  '使用中',
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: Colors.green.shade700,
-                        fontWeight: FontWeight.w600,
-                      ),
+                  entry.activeSource,
+                  style: textTheme.labelSmall?.copyWith(
+                    fontFamily: 'Consolas',
+                    color: colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             ],
@@ -687,18 +964,16 @@ class _StorageEntryTile extends StatelessWidget {
           entry.path,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                fontFamily: 'Consolas',
-                color: colorScheme.onSurfaceVariant,
-              ),
+          style: textTheme.bodySmall?.copyWith(
+            fontFamily: 'Consolas',
+            color: colorScheme.onSurfaceVariant,
+          ),
         ),
         trailing: Text(
           entry.exists ? entry.sizeHuman : '—',
-          style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                color: entry.exists
-                    ? colorScheme.primary
-                    : colorScheme.onSurfaceVariant,
-              ),
+          style: textTheme.labelLarge?.copyWith(
+            color: entry.exists ? colorScheme.primary : colorScheme.onSurfaceVariant,
+          ),
         ),
         children: [
           Padding(
@@ -706,33 +981,17 @@ class _StorageEntryTile extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (entry.isActive && entry.activeSource.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Row(
-                      children: [
-                        Icon(Icons.check_circle,
-                            size: 16, color: Colors.green.shade600),
-                        const SizedBox(width: 6),
-                        Text(
-                          '当前使用（来源：${entry.activeSource}）',
-                          style:
-                              Theme.of(context).textTheme.bodySmall?.copyWith(
-                                    color: Colors.green.shade700,
-                                  ),
-                        ),
-                      ],
-                    ),
-                  ),
+                if (entry.path.isNotEmpty && Directory(entry.path).existsSync())
+                  _OpenFolderRow(path: entry.path),
                 if (entry.notes.isNotEmpty)
                   _InfoRow(label: '说明', value: entry.notes),
                 if (entry.subEntries.isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(
                     '子目录',
-                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                          color: colorScheme.onSurfaceVariant,
-                        ),
+                    style: textTheme.labelMedium?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
                   ),
                   const SizedBox(height: 6),
                   for (final sub in entry.subEntries)
@@ -740,10 +999,27 @@ class _StorageEntryTile extends StatelessWidget {
                       padding: const EdgeInsets.only(bottom: 6),
                       child: Row(
                         children: [
-                          Expanded(child: Text(sub.name)),
-                          Text(
-                            sub.sizeHuman,
-                            style: Theme.of(context).textTheme.labelMedium,
+                          if (sub.path.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 4),
+                              child: _CopyButton(value: sub.path),
+                            ),
+                          Flexible(child: Text(sub.name)),
+                          SizedBox(
+                            width: _sizeWidth,
+                            child: Text(
+                              sub.exists ? sub.sizeHuman : '—',
+                              textAlign: TextAlign.right,
+                              style: textTheme.labelMedium?.copyWith(
+                                color: sub.exists ? null : colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          SizedBox(
+                            width: _actionWidth,
+                            child: sub.path.isNotEmpty && Directory(sub.path).existsSync()
+                                ? _FolderButton(onTap: () => _openInExplorer(sub.path))
+                                : null,
                           ),
                         ],
                       ),
@@ -753,6 +1029,74 @@ class _StorageEntryTile extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _OpenFolderRow extends StatelessWidget {
+  const _OpenFolderRow({required this.path});
+
+  final String path;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: () => _openInExplorer(path),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+          child: Row(
+            children: [
+              Icon(Icons.folder_outlined, size: 18,
+                  color: colorScheme.onSurfaceVariant),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  path,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: textTheme.bodySmall?.copyWith(
+                    fontFamily: 'Consolas',
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Icon(Icons.open_in_new, size: 16, color: colorScheme.primary),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FolderButton extends StatelessWidget {
+  const _FolderButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: '打开文件夹',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(4),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(2),
+          child: Icon(
+            Icons.folder_open,
+            size: 16,
+            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.6),
+          ),
+        ),
       ),
     );
   }
@@ -792,39 +1136,70 @@ class _InfoChipRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 52,
+            width: 56,
             child: Text(
               label,
-              textAlign: TextAlign.right,
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    height: 1.2,
+                    height: 1.4,
                   ),
             ),
           ),
           const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                color: Theme.of(context).colorScheme.outlineVariant,
-              ),
-            ),
+          Flexible(
             child: SelectableText(
               value,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     fontFamily: 'Consolas',
-                    height: 1.2,
+                    height: 1.4,
                   ),
             ),
           ),
-          const Spacer(),
+          const SizedBox(width: 6),
+          _CopyButton(value: value),
         ],
+      ),
+    );
+  }
+}
+
+class _CopyButton extends StatelessWidget {
+  const _CopyButton({required this.value});
+
+  final String value;
+
+  void _copy(BuildContext context) {
+    Clipboard.setData(ClipboardData(text: value));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('已复制'),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        width: 120,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 28,
+      height: 28,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => _copy(context),
+        child: Icon(
+          Icons.copy,
+          size: 16,
+          color: Theme.of(context)
+              .colorScheme
+              .onSurfaceVariant
+              .withValues(alpha: 0.45),
+        ),
       ),
     );
   }
@@ -852,6 +1227,130 @@ class _InfoRow extends StatelessWidget {
                 ),
           ),
           SelectableText(value),
+        ],
+      ),
+    );
+  }
+}
+
+String _channelDisplayName(String channel) => switch (channel) {
+      'release' => 'Stable',
+      'beta' => 'Beta',
+      'eap' => 'Canary',
+      'milestone' => 'Dev',
+      'archive' => '历史',
+      _ => channel,
+    };
+
+class _VersionCard extends StatelessWidget {
+  const _VersionCard({required this.version});
+
+  final StudioVersion version;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: ExpansionTile(
+        tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        leading: Icon(
+          switch (version.channel) {
+            'release' => Icons.check_circle_outline,
+            'beta' => Icons.science_outlined,
+            'eap' => Icons.flash_on_outlined,
+            'archive' => Icons.history,
+            _ => Icons.build_circle_outlined,
+          },
+          color: switch (version.channel) {
+            'release' => Colors.green,
+            'beta' => Colors.orange,
+            'eap' => Colors.deepPurple,
+            'archive' => Colors.blueGrey,
+            _ => colorScheme.primary,
+          },
+        ),
+        title: Row(
+          children: [
+            Flexible(
+              child: Text(
+                version.codename.isEmpty ? version.version : version.codename,
+                style: textTheme.titleSmall,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: colorScheme.outlineVariant),
+              ),
+              child: Text(
+                version.channelLabel,
+                style: textTheme.labelSmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                  fontFamily: 'Consolas',
+                ),
+              ),
+            ),
+          ],
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 4),
+            Text(
+              version.version,
+              style: textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              version.buildNumber,
+              style: textTheme.bodySmall?.copyWith(
+                fontFamily: 'Consolas',
+                fontSize: 11,
+                color: colorScheme.outline,
+              ),
+            ),
+          ],
+        ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (version.releaseNotes.isNotEmpty) ...[
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      color: colorScheme.surfaceContainerLow,
+                      child: Text(
+                        version.releaseNotes,
+                        maxLines: 8,
+                        overflow: TextOverflow.fade,
+                        style: textTheme.bodySmall?.copyWith(height: 1.5),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                if (version.downloadUrl.isNotEmpty)
+                  FilledButton.icon(
+                    onPressed: () => _openUrl(version.downloadUrl),
+                    icon: const Icon(Icons.download, size: 18),
+                    label: const Text('下载安装包'),
+                  ),
+              ],
+            ),
+          ),
         ],
       ),
     );
