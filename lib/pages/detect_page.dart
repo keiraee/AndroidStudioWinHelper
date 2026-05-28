@@ -5,9 +5,11 @@ import 'package:flutter/services.dart';
 import 'package:androidstudiowinhelper/core/android_studio_detector.dart';
 import 'package:androidstudiowinhelper/core/data_dir_scanner.dart';
 import 'package:androidstudiowinhelper/core/download_manager.dart';
+import 'package:androidstudiowinhelper/core/env_path_manager.dart';
 import 'package:androidstudiowinhelper/core/models/android_studio_install.dart';
 import 'package:androidstudiowinhelper/core/models/data_dir_entry.dart';
 import 'package:androidstudiowinhelper/core/models/download_task.dart';
+import 'package:androidstudiowinhelper/core/models/env_path_config.dart';
 import 'package:androidstudiowinhelper/core/models/scan_progress.dart';
 import 'package:androidstudiowinhelper/core/models/studio_version.dart';
 import 'package:androidstudiowinhelper/core/scan_cache.dart';
@@ -23,7 +25,7 @@ Future<void> _openUrl(String url) async {
   await Process.start('cmd', ['/c', 'start', '', url]);
 }
 
-enum _PageTab { install, storage, download }
+enum _PageTab { install, storage, download, envConfig }
 
 class DetectPage extends StatefulWidget {
   const DetectPage({super.key});
@@ -54,6 +56,14 @@ class _DetectPageState extends State<DetectPage> {
   final _versionService = StudioVersionService();
   final _downloadManager = DownloadManager();
 
+  final _envManager = EnvPathManager();
+  bool _envLoading = false;
+  bool _envWriting = false;
+  bool _envRollingBack = false;
+  EnvPathConfigResult? _envResult;
+  ScanProgress? _envProgress;
+  final Map<String, TextEditingController> _envControllers = {};
+
   bool get _hasCache => _storageResult != null;
 
   @override
@@ -68,6 +78,10 @@ class _DetectPageState extends State<DetectPage> {
   void dispose() {
     _versionService.dispose();
     _downloadManager.dispose();
+    for (final c in _envControllers.values) {
+      c.dispose();
+    }
+    _envControllers.clear();
     super.dispose();
   }
 
@@ -172,6 +186,381 @@ class _DetectPageState extends State<DetectPage> {
     }
   }
 
+  Future<void> _loadEnvConfig() async {
+    setState(() {
+      _envLoading = true;
+      _envProgress = const ScanProgress(percent: 0, message: '正在检测环境变量…');
+      _error = null;
+    });
+
+    try {
+      final result = await _envManager.readConfig(
+        onProgress: (progress) {
+          if (!mounted) return;
+          setState(() => _envProgress = progress);
+        },
+      );
+      setState(() {
+        _envResult = result;
+        _envProgress = const ScanProgress(percent: 100, message: '检测完成');
+        // 初始化 TextEditingController
+        for (final item in result.items) {
+          if (!_envControllers.containsKey(item.variable)) {
+            _envControllers[item.variable] = TextEditingController(
+              text: item.currentValue,
+            );
+          }
+        }
+      });
+    } catch (error) {
+      setState(() => _error = error.toString());
+    } finally {
+      setState(() => _envLoading = false);
+    }
+  }
+
+  Future<void> _writeEnvVariable(
+    String variable,
+    String value, {
+    bool createDir = false,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认修改环境变量'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('变量：$variable'),
+            const SizedBox(height: 4),
+            Text('新值：$value'),
+            if (createDir) ...[
+              const SizedBox(height: 4),
+              const Text('将自动创建目标目录（如不存在）'),
+            ],
+            const SizedBox(height: 12),
+            const Text(
+              '此操作需要管理员权限，将修改系统级环境变量。',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认修改'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      _envWriting = true;
+      _error = null;
+    });
+
+    try {
+      await _envManager.backupCurrentConfig();
+      final result = await _envManager.writeVariable(
+        variable: variable,
+        value: value,
+        createDir: createDir,
+      );
+
+      if (!mounted) return;
+
+      if (result.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('$variable 已更新为 $value'),
+            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+          ),
+        );
+        await _loadEnvConfig();
+      } else {
+        setState(() => _error = '写入失败：${result.error}');
+      }
+    } catch (error) {
+      setState(() => _error = error.toString());
+    } finally {
+      setState(() => _envWriting = false);
+    }
+  }
+
+  Future<void> _appendPathToSystem(String path, {bool createDir = false}) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认追加 PATH'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('将以下路径追加到系统 PATH：'),
+            const SizedBox(height: 4),
+            Text(path, style: const TextStyle(fontFamily: 'Consolas')),
+            if (createDir) ...[
+              const SizedBox(height: 4),
+              const Text('将自动创建目标目录（如不存在）'),
+            ],
+            const SizedBox(height: 12),
+            const Text(
+              '此操作需要管理员权限。',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认追加'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      _envWriting = true;
+      _error = null;
+    });
+
+    try {
+      await _envManager.backupCurrentConfig();
+      final result = await _envManager.appendToPath(
+        path: path,
+        createDir: createDir,
+      );
+
+      if (!mounted) return;
+
+      if (result.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.error.isNotEmpty
+                ? result.error
+                : '已将 $path 追加到系统 PATH'),
+            backgroundColor: result.error.isNotEmpty
+                ? Theme.of(context).colorScheme.tertiaryContainer
+                : Theme.of(context).colorScheme.primaryContainer,
+          ),
+        );
+        await _loadEnvConfig();
+      } else {
+        setState(() => _error = '追加 PATH 失败：${result.error}');
+      }
+    } catch (error) {
+      setState(() => _error = error.toString());
+    } finally {
+      setState(() => _envWriting = false);
+    }
+  }
+
+  Future<void> _oneClickRewrite() async {
+    if (_envResult == null) return;
+
+    final changes = <MapEntry<String, String>>[];
+    for (final item in _envResult!.items) {
+      if (item.variable == 'GRADLE_USER_HOME') continue; // 跳过默认路径展示项
+      final controller = _envControllers[item.variable];
+      if (controller == null) continue;
+      final newValue = controller.text.trim();
+      if (newValue.isEmpty || newValue == item.currentValue) continue;
+      changes.add(MapEntry(item.variable, newValue));
+    }
+
+    if (changes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('没有需要修改的变量')),
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('一键配置环境变量'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('将修改以下系统环境变量：'),
+            const SizedBox(height: 8),
+            for (final entry in changes)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  '${entry.key} → ${entry.value}',
+                  style: const TextStyle(fontFamily: 'Consolas', fontSize: 13),
+                ),
+              ),
+            const SizedBox(height: 12),
+            const Text(
+              '此操作需要管理员权限，并将自动创建目标目录。',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认配置'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      _envWriting = true;
+      _error = null;
+    });
+
+    await _envManager.backupCurrentConfig();
+
+    final errors = <String>[];
+    for (final entry in changes) {
+      try {
+        final result = await _envManager.writeVariable(
+          variable: entry.key,
+          value: entry.value,
+          createDir: true,
+        );
+        if (!result.success) {
+          errors.add('${entry.key}: ${result.error}');
+        }
+      } catch (error) {
+        errors.add('${entry.key}: $error');
+      }
+    }
+
+    if (!mounted) return;
+
+    if (errors.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已成功配置 ${changes.length} 个环境变量'),
+          backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+        ),
+      );
+    } else {
+      setState(() => _error = '部分写入失败：\n${errors.join('\n')}');
+    }
+
+    setState(() => _envWriting = false);
+    await _loadEnvConfig();
+  }
+
+  Future<void> _rollbackEnvConfig() async {
+    final backup = _envManager.loadBackup();
+    if (backup == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('没有可回退的配置缓存')),
+      );
+      return;
+    }
+
+    final items = backup.items
+        .where((item) =>
+            item.variable != 'GRADLE_USER_HOME' &&
+            item.source != 'NotSet' &&
+            item.currentValue.isNotEmpty)
+        .toList();
+
+    if (items.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('缓存中没有可回退的变量')),
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认回退环境变量'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('将恢复为上一次的配置：'),
+            const SizedBox(height: 8),
+            for (final item in items)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  '${item.variable} → ${item.currentValue}',
+                  style: const TextStyle(fontFamily: 'Consolas', fontSize: 13),
+                ),
+              ),
+            const SizedBox(height: 12),
+            const Text(
+              '此操作需要管理员权限。',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认回退'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      _envRollingBack = true;
+      _error = null;
+    });
+
+    try {
+      final results = await _envManager.rollback();
+
+      if (!mounted) return;
+
+      final failures = results.where((r) => !r.success).toList();
+      if (failures.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('已成功回退 ${results.length} 个环境变量'),
+            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+          ),
+        );
+      } else {
+        setState(() =>
+            _error = '部分回退失败：\n${failures.map((r) => '${r.variable}: ${r.error}').join('\n')}');
+      }
+    } catch (error) {
+      setState(() => _error = error.toString());
+    } finally {
+      setState(() => _envRollingBack = false);
+      await _loadEnvConfig();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -228,6 +617,17 @@ class _DetectPageState extends State<DetectPage> {
                       selected: _activeTab == _PageTab.download,
                       onTap: () => setState(() => _activeTab = _PageTab.download),
                     ),
+                    const SizedBox(height: 12),
+                    _TabTile(
+                      icon: Icons.tune_outlined,
+                      title: '环境配置',
+                      subtitle: '检测并配置 ANDROID_HOME、GRADLE_HOME 等环境变量',
+                      selected: _activeTab == _PageTab.envConfig,
+                      onTap: () {
+                        setState(() => _activeTab = _PageTab.envConfig);
+                        if (_envResult == null) _loadEnvConfig();
+                      },
+                    ),
                     const Spacer(),
                   ],
                 ),
@@ -239,6 +639,7 @@ class _DetectPageState extends State<DetectPage> {
               _PageTab.install => _buildInstallTab(),
               _PageTab.storage => _buildStorageTab(),
               _PageTab.download => _buildDownloadTab(),
+              _PageTab.envConfig => _buildEnvConfigTab(),
             },
           ),
         ],
@@ -521,6 +922,157 @@ class _DetectPageState extends State<DetectPage> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildEnvConfigTab() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _SectionHeader(
+            icon: Icons.tune_outlined,
+            title: '环境变量配置',
+            trailing: _envResult != null
+                ? '${_envResult!.items.length} 项变量 · ${_envResult!.pathEntries.length} 项 PATH'
+                : null,
+            action: _ActionButton(
+              label: _envResult != null ? '重新检测' : '检测环境',
+              icon: Icons.refresh,
+              loading: _envLoading,
+              onPressed: _envLoading ? null : _loadEnvConfig,
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (_envWriting)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    '正在写入环境变量（请在 UAC 弹窗中确认）…',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ],
+              ),
+            ),
+          if (_envLoading && _envProgress != null)
+            _ProgressPanel(progress: _envProgress!),
+          if (_error != null) _ErrorPanel(message: _error!),
+          Expanded(child: _buildEnvConfigResult()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEnvConfigResult() {
+    if (_envResult == null && !_envLoading) {
+      return const _EmptyPanel(
+        hint: '点击右上角「检测环境」查看当前环境变量配置',
+      );
+    }
+
+    if (_envResult == null) return const SizedBox.shrink();
+
+    final items = _envResult!.items;
+    final pathEntries = _envResult!.pathEntries;
+
+    return ListView(
+      children: [
+        for (final item in items)
+          _EnvPathCard(
+            item: item,
+            controller: _envControllers[item.variable],
+            onApply: (value) => _writeEnvVariable(
+              item.variable,
+              value,
+            ),
+            onApplyWithDir: (value) => _writeEnvVariable(
+              item.variable,
+              value,
+              createDir: true,
+            ),
+          ),
+        if (pathEntries.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Card(
+            margin: const EdgeInsets.only(bottom: 10),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.alt_route_outlined,
+                          size: 20,
+                          color: Theme.of(context).colorScheme.primary),
+                      const SizedBox(width: 8),
+                      Text(
+                        'PATH 中的 SDK 子目录',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  for (final entry in pathEntries)
+                    _PathEntryTile(
+                      entry: entry,
+                      onAppend: () => _appendPathToSystem(entry.fullPath),
+                      onAppendWithDir: () =>
+                          _appendPathToSystem(entry.fullPath, createDir: true),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+        Padding(
+          padding: const EdgeInsets.only(top: 8, bottom: 24),
+          child: Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            children: [
+              if (items.any((item) =>
+                  item.variable != 'GRADLE_USER_HOME' &&
+                  _envControllers[item.variable]?.text.trim().isNotEmpty ==
+                      true))
+                FilledButton.icon(
+                  onPressed: _envWriting ? null : _oneClickRewrite,
+                  icon: _envWriting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.auto_fix_high),
+                  label: const Text('一键配置所有环境变量'),
+                ),
+              if (_envManager.loadBackup() != null)
+                OutlinedButton.icon(
+                  onPressed: (_envWriting || _envRollingBack)
+                      ? null
+                      : _rollbackEnvConfig,
+                  icon: _envRollingBack
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.undo),
+                  label: const Text('回退上一次配置'),
+                ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1397,6 +1949,296 @@ class _VersionCard extends StatelessWidget {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EnvPathCard extends StatelessWidget {
+  const _EnvPathCard({
+    required this.item,
+    required this.controller,
+    required this.onApply,
+    required this.onApplyWithDir,
+  });
+
+  final EnvPathItem item;
+  final TextEditingController? controller;
+  final void Function(String value) onApply;
+  final void Function(String value) onApplyWithDir;
+
+  Color _statusColor(BuildContext context) {
+    if (item.source == 'NotSet') return Theme.of(context).colorScheme.outline;
+    if (item.exists) return Colors.green;
+    return Theme.of(context).colorScheme.error;
+  }
+
+  String _statusLabel() {
+    if (item.source == 'NotSet') return '未设置 [source=NotSet]';
+    if (item.exists) return '正常 [exists=true]';
+    return '路径不存在 [exists=false]';
+  }
+
+  IconData _varIcon() {
+    if (item.variable.contains('SDK') || item.variable.contains('ANDROID_HOME')) {
+      return Icons.phone_android;
+    }
+    if (item.variable.contains('GRADLE')) {
+      return Icons.build_circle_outlined;
+    }
+    return Icons.settings_outlined;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(_varIcon(), size: 20, color: colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    item.variable,
+                    style: textTheme.titleSmall?.copyWith(
+                      fontFamily: 'Consolas',
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: _statusColor(context).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: _statusColor(context).withValues(alpha: 0.35),
+                    ),
+                  ),
+                  child: Text(
+                    _statusLabel(),
+                    style: textTheme.labelSmall?.copyWith(
+                      color: _statusColor(context),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              item.label,
+              style: textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 12),
+            if (item.currentValue.isNotEmpty) ...[
+              Row(
+                children: [
+                  Text(
+                    '当前值：',
+                    style: textTheme.labelMedium?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  Expanded(
+                    child: SelectableText(
+                      item.currentValue,
+                      style: textTheme.bodySmall?.copyWith(
+                        fontFamily: 'Consolas',
+                        color: colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                  _CopyButton(value: item.currentValue),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Wrap(
+                spacing: 12,
+                children: [
+                  Text(
+                    '来源：${item.source}',
+                    style: textTheme.labelSmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  if (item.exists && item.sizeHuman.isNotEmpty)
+                    Text(
+                      '大小：${item.sizeHuman}',
+                      style: textTheme.labelSmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                ],
+              ),
+            ],
+            if (item.currentValue.isEmpty)
+              Text(
+                '未设置',
+                style: textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            const SizedBox(height: 12),
+            if (controller != null) ...[
+              TextField(
+                controller: controller,
+                style: textTheme.bodySmall?.copyWith(fontFamily: 'Consolas'),
+                decoration: InputDecoration(
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  border: const OutlineInputBorder(),
+                  labelText: '新路径',
+                  hintText: item.suggestedDefault.isNotEmpty
+                      ? item.suggestedDefault
+                      : '输入新路径',
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      final value = controller!.text.trim();
+                      if (value.isNotEmpty) onApply(value);
+                    },
+                    icon: const Icon(Icons.check, size: 16),
+                    label: const Text('应用'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      final value = controller!.text.trim();
+                      if (value.isNotEmpty) onApplyWithDir(value);
+                    },
+                    icon: const Icon(Icons.create_new_folder_outlined, size: 16),
+                    label: const Text('创建目录并应用'),
+                  ),
+                  if (item.suggestedDefault.isNotEmpty &&
+                      item.suggestedDefault != controller!.text)
+                    TextButton(
+                      onPressed: () {
+                        controller!.text = item.suggestedDefault;
+                      },
+                      child: const Text('使用默认值'),
+                    ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PathEntryTile extends StatelessWidget {
+  const _PathEntryTile({
+    required this.entry,
+    required this.onAppend,
+    required this.onAppendWithDir,
+  });
+
+  final EnvPathEntry entry;
+  final VoidCallback onAppend;
+  final VoidCallback onAppendWithDir;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    Color statusColor;
+    String statusLabel;
+    if (entry.inPath) {
+      statusColor = Colors.green;
+      statusLabel = '已在 PATH';
+    } else if (entry.exists) {
+      statusColor = colorScheme.tertiary;
+      statusLabel = '未在 PATH';
+    } else {
+      statusColor = colorScheme.outline;
+      statusLabel = '目录不存在';
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: statusColor.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: statusColor.withValues(alpha: 0.35)),
+            ),
+            child: Text(
+              statusLabel,
+              style: textTheme.labelSmall?.copyWith(
+                color: statusColor,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(entry.subDir, style: textTheme.bodySmall),
+                if (entry.fullPath.isNotEmpty)
+                  Text(
+                    entry.fullPath,
+                    style: textTheme.labelSmall?.copyWith(
+                      fontFamily: 'Consolas',
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+              ],
+            ),
+          ),
+          if (!entry.inPath && entry.exists) ...[
+            const SizedBox(width: 8),
+            TextButton(
+              onPressed: onAppend,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('追加到 PATH'),
+            ),
+          ],
+          if (!entry.inPath && !entry.exists) ...[
+            const SizedBox(width: 8),
+            TextButton(
+              onPressed: onAppendWithDir,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('创建并追加'),
+            ),
+          ],
         ],
       ),
     );

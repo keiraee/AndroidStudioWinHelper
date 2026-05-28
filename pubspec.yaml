@@ -65,6 +65,7 @@ flutter:
   assets:
     - scripts/detect-android-studio.ps1
     - scripts/scan-data-dirs.ps1
+    - scripts/config-env-paths.ps1
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

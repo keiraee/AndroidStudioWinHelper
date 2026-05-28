@@ -1,0 +1,145 @@
+class EnvPathItem {
+  const EnvPathItem({
+    required this.variable,
+    required this.label,
+    required this.currentValue,
+    required this.source,
+    required this.exists,
+    this.sizeBytes = 0,
+    this.sizeHuman = '',
+    this.suggestedDefault = '',
+  });
+
+  final String variable;
+  final String label;
+  final String currentValue;
+  final String source; // 'Machine', 'User', 'Process', 'Default', 'NotSet'
+  final bool exists;
+  final int sizeBytes;
+  final String sizeHuman;
+  final String suggestedDefault;
+
+  factory EnvPathItem.fromJson(Map<String, dynamic> json) {
+    return EnvPathItem(
+      variable: json['variable'] as String? ?? '',
+      label: json['label'] as String? ?? '',
+      currentValue: json['currentValue'] as String? ?? '',
+      source: json['source'] as String? ?? 'NotSet',
+      exists: json['exists'] as bool? ?? false,
+      sizeBytes: _readInt(json['sizeBytes']),
+      sizeHuman: json['sizeHuman'] as String? ?? '',
+      suggestedDefault: json['suggestedDefault'] as String? ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'variable': variable,
+        'label': label,
+        'currentValue': currentValue,
+        'source': source,
+        'exists': exists,
+        'sizeBytes': sizeBytes,
+        'sizeHuman': sizeHuman,
+        'suggestedDefault': suggestedDefault,
+      };
+}
+
+class EnvPathEntry {
+  const EnvPathEntry({
+    required this.subDir,
+    required this.fullPath,
+    required this.inPath,
+    required this.exists,
+  });
+
+  final String subDir;
+  final String fullPath;
+  final bool inPath;
+  final bool exists;
+
+  factory EnvPathEntry.fromJson(Map<String, dynamic> json) {
+    return EnvPathEntry(
+      subDir: json['subDir'] as String? ?? '',
+      fullPath: json['fullPath'] as String? ?? '',
+      inPath: json['inPath'] as bool? ?? false,
+      exists: json['exists'] as bool? ?? false,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'subDir': subDir,
+        'fullPath': fullPath,
+        'inPath': inPath,
+        'exists': exists,
+      };
+}
+
+class EnvPathConfigResult {
+  const EnvPathConfigResult({
+    required this.items,
+    required this.pathEntries,
+  });
+
+  final List<EnvPathItem> items;
+  final List<EnvPathEntry> pathEntries;
+
+  factory EnvPathConfigResult.fromJson(Map<String, dynamic> json) {
+    final rawItems = json['items'];
+    final rawPathEntries = json['pathEntries'];
+    return EnvPathConfigResult(
+      items: rawItems is List
+          ? rawItems
+              .whereType<Map<String, dynamic>>()
+              .map(EnvPathItem.fromJson)
+              .toList()
+          : const [],
+      pathEntries: rawPathEntries is List
+          ? rawPathEntries
+              .whereType<Map<String, dynamic>>()
+              .map(EnvPathEntry.fromJson)
+              .toList()
+          : const [],
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'items': items.map((e) => e.toJson()).toList(),
+        'pathEntries': pathEntries.map((e) => e.toJson()).toList(),
+      };
+}
+
+class EnvPathWriteResult {
+  const EnvPathWriteResult({
+    required this.success,
+    required this.variable,
+    required this.value,
+    this.error = '',
+  });
+
+  final bool success;
+  final String variable;
+  final String value;
+  final String error;
+
+  factory EnvPathWriteResult.fromJson(Map<String, dynamic> json) {
+    return EnvPathWriteResult(
+      success: json['success'] as bool? ?? false,
+      variable: json['variable'] as String? ?? '',
+      value: json['value'] as String? ?? '',
+      error: json['error'] as String? ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'success': success,
+        'variable': variable,
+        'value': value,
+        'error': error,
+      };
+}
+
+int _readInt(Object? value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return 0;
+}

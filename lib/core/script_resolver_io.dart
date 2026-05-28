@@ -37,6 +37,14 @@ Future<String> resolveScanDataDirsScript() {
   );
 }
 
+Future<String> resolveConfigEnvPathsScript() {
+  return resolveScript(
+    fileName: 'config-env-paths.ps1',
+    assetPath: 'scripts/config-env-paths.ps1',
+    envVar: 'ASWH_CONFIG_ENV_SCRIPT',
+  );
+}
+
 Iterable<String> _projectCandidates(String fileName) sync* {
   final cwd = Directory.current.path;
   yield _join(cwd, 'scripts/$fileName');
