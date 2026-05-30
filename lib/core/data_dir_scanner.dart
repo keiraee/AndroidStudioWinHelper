@@ -192,18 +192,24 @@ class DataDirScanner {
     required String stdoutText,
     required String stderrText,
   }) {
-    final resultMatch = RegExp(
-      r'@@RESULT\|(.+?)@@',
-      dotAll: true,
-    ).firstMatch(stdoutText);
-
-    final jsonText = resultMatch != null
-        ? resultMatch.group(1)!.trim()
-        : stdoutText
-            .split('\n')
-            .where((line) => !line.trim().startsWith('@@PROGRESS|'))
-            .join('\n')
-            .trim();
+    final marker = '@@RESULT|';
+    final startIdx = stdoutText.indexOf(marker);
+    final String jsonText;
+    if (startIdx >= 0) {
+      final afterMarker = startIdx + marker.length;
+      final endIdx = stdoutText.indexOf('@@', afterMarker);
+      if (endIdx > afterMarker) {
+        jsonText = stdoutText.substring(afterMarker, endIdx).trim();
+      } else {
+        jsonText = stdoutText.substring(afterMarker).trim();
+      }
+    } else {
+      jsonText = stdoutText
+          .split('\n')
+          .where((line) => !line.trim().startsWith('@@PROGRESS|'))
+          .join('\n')
+          .trim();
+    }
 
     if (stderrText.isNotEmpty && jsonText.isEmpty) {
       throw StateError('PowerShell 执行失败：$stderrText');

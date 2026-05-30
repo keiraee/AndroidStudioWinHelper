@@ -45,6 +45,22 @@ Future<String> resolveConfigEnvPathsScript() {
   );
 }
 
+Future<String> resolveDetectHypervScript() {
+  return resolveScript(
+    fileName: 'detect-hyperv.ps1',
+    assetPath: 'scripts/detect-hyperv.ps1',
+    envVar: 'ASWH_DETECT_HYPERV_SCRIPT',
+  );
+}
+
+Future<String> resolveToggleHypervScript() {
+  return resolveScript(
+    fileName: 'toggle-hyperv.ps1',
+    assetPath: 'scripts/toggle-hyperv.ps1',
+    envVar: 'ASWH_TOGGLE_HYPERV_SCRIPT',
+  );
+}
+
 Iterable<String> _projectCandidates(String fileName) sync* {
   final cwd = Directory.current.path;
   yield _join(cwd, 'scripts/$fileName');
