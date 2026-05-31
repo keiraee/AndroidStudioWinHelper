@@ -5,12 +5,20 @@ import 'package:flutter/services.dart';
 import 'package:androidstudiowinhelper/core/android_studio_detector.dart';
 import 'package:androidstudiowinhelper/core/data_dir_scanner.dart';
 import 'package:androidstudiowinhelper/core/download_manager.dart';
+import 'package:androidstudiowinhelper/core/emulator_check_manager.dart';
+import 'package:androidstudiowinhelper/core/env_path_manager.dart';
+import 'package:androidstudiowinhelper/core/hyperv_manager.dart';
+import 'package:androidstudiowinhelper/core/log_manager.dart';
 import 'package:androidstudiowinhelper/core/models/android_studio_install.dart';
+import 'package:androidstudiowinhelper/core/models/emulator_check_result.dart';
 import 'package:androidstudiowinhelper/core/models/data_dir_entry.dart';
 import 'package:androidstudiowinhelper/core/models/download_task.dart';
+import 'package:androidstudiowinhelper/core/models/env_path_config.dart';
+import 'package:androidstudiowinhelper/core/models/hyperv_result.dart';
 import 'package:androidstudiowinhelper/core/models/scan_progress.dart';
 import 'package:androidstudiowinhelper/core/models/studio_version.dart';
 import 'package:androidstudiowinhelper/core/scan_cache.dart';
+import 'package:androidstudiowinhelper/core/sdk_setup_manager.dart';
 import 'package:androidstudiowinhelper/core/studio_version_service.dart';
 import 'package:androidstudiowinhelper/pages/download_progress_card.dart';
 import 'package:flutter/material.dart';
@@ -23,7 +31,7 @@ Future<void> _openUrl(String url) async {
   await Process.start('cmd', ['/c', 'start', '', url]);
 }
 
-enum _PageTab { install, storage, download }
+enum _PageTab { install, storage, download, envConfig, hyperV, sdkSetup }
 
 class DetectPage extends StatefulWidget {
   const DetectPage({super.key});
@@ -54,6 +62,35 @@ class _DetectPageState extends State<DetectPage> {
   final _versionService = StudioVersionService();
   final _downloadManager = DownloadManager();
 
+  final _envManager = EnvPathManager();
+  bool _envLoading = false;
+  bool _envWriting = false;
+  bool _envRollingBack = false;
+  EnvPathConfigResult? _envResult;
+  ScanProgress? _envProgress;
+  final Map<String, TextEditingController> _envControllers = {};
+
+  final _hypervManager = HypervManager();
+  bool _hypervLoading = false;
+  bool _hypervToggling = false;
+  bool _whpxToggling = false;
+  HypervResult? _hypervResult;
+  ScanProgress? _hypervProgress;
+  ScanProgress? _hypervToggleProgress;
+
+  final _emuCheckManager = EmulatorCheckManager();
+  bool _emuCheckLoading = false;
+  EmulatorCheckResult? _emuCheckResult;
+
+  final _sdkSetupManager = SdkSetupManager();
+  bool _sdkSetupLoading = false;
+  int _sdkSetupPercent = 0;
+  String _sdkSetupMessage = '';
+  SdkActionResult? _sdkSetupResult;
+  SdkStatus? _sdkStatus;
+  final _sdkProxyController = TextEditingController();
+  String _sdkMirror = 'flutter';
+
   bool get _hasCache => _storageResult != null;
 
   @override
@@ -68,6 +105,10 @@ class _DetectPageState extends State<DetectPage> {
   void dispose() {
     _versionService.dispose();
     _downloadManager.dispose();
+    for (final c in _envControllers.values) {
+      c.dispose();
+    }
+    _envControllers.clear();
     super.dispose();
   }
 
@@ -172,6 +213,381 @@ class _DetectPageState extends State<DetectPage> {
     }
   }
 
+  Future<void> _loadEnvConfig() async {
+    setState(() {
+      _envLoading = true;
+      _envProgress = const ScanProgress(percent: 0, message: '正在检测环境变量…');
+      _error = null;
+    });
+
+    try {
+      final result = await _envManager.readConfig(
+        onProgress: (progress) {
+          if (!mounted) return;
+          setState(() => _envProgress = progress);
+        },
+      );
+      setState(() {
+        _envResult = result;
+        _envProgress = const ScanProgress(percent: 100, message: '检测完成');
+        // 初始化 TextEditingController
+        for (final item in result.items) {
+          if (!_envControllers.containsKey(item.variable)) {
+            _envControllers[item.variable] = TextEditingController(
+              text: item.currentValue,
+            );
+          }
+        }
+      });
+    } catch (error) {
+      setState(() => _error = error.toString());
+    } finally {
+      setState(() => _envLoading = false);
+    }
+  }
+
+  Future<void> _writeEnvVariable(
+    String variable,
+    String value, {
+    bool createDir = false,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认修改环境变量'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('变量：$variable'),
+            const SizedBox(height: 4),
+            Text('新值：$value'),
+            if (createDir) ...[
+              const SizedBox(height: 4),
+              const Text('将自动创建目标目录（如不存在）'),
+            ],
+            const SizedBox(height: 12),
+            const Text(
+              '此操作需要管理员权限，将修改系统级环境变量。',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认修改'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      _envWriting = true;
+      _error = null;
+    });
+
+    try {
+      await _envManager.backupCurrentConfig();
+      final result = await _envManager.writeVariable(
+        variable: variable,
+        value: value,
+        createDir: createDir,
+      );
+
+      if (!mounted) return;
+
+      if (result.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('$variable 已更新为 $value'),
+            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+          ),
+        );
+        await _loadEnvConfig();
+      } else {
+        setState(() => _error = '写入失败：${result.error}');
+      }
+    } catch (error) {
+      setState(() => _error = error.toString());
+    } finally {
+      setState(() => _envWriting = false);
+    }
+  }
+
+  Future<void> _appendPathToSystem(String path, {bool createDir = false}) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认追加 PATH'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('将以下路径追加到系统 PATH：'),
+            const SizedBox(height: 4),
+            Text(path, style: const TextStyle(fontFamily: 'Consolas')),
+            if (createDir) ...[
+              const SizedBox(height: 4),
+              const Text('将自动创建目标目录（如不存在）'),
+            ],
+            const SizedBox(height: 12),
+            const Text(
+              '此操作需要管理员权限。',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认追加'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      _envWriting = true;
+      _error = null;
+    });
+
+    try {
+      await _envManager.backupCurrentConfig();
+      final result = await _envManager.appendToPath(
+        path: path,
+        createDir: createDir,
+      );
+
+      if (!mounted) return;
+
+      if (result.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.error.isNotEmpty
+                ? result.error
+                : '已将 $path 追加到系统 PATH'),
+            backgroundColor: result.error.isNotEmpty
+                ? Theme.of(context).colorScheme.tertiaryContainer
+                : Theme.of(context).colorScheme.primaryContainer,
+          ),
+        );
+        await _loadEnvConfig();
+      } else {
+        setState(() => _error = '追加 PATH 失败：${result.error}');
+      }
+    } catch (error) {
+      setState(() => _error = error.toString());
+    } finally {
+      setState(() => _envWriting = false);
+    }
+  }
+
+  Future<void> _oneClickRewrite() async {
+    if (_envResult == null) return;
+
+    final changes = <MapEntry<String, String>>[];
+    for (final item in _envResult!.items) {
+      if (item.variable == 'GRADLE_USER_HOME') continue; // 跳过默认路径展示项
+      final controller = _envControllers[item.variable];
+      if (controller == null) continue;
+      final newValue = controller.text.trim();
+      if (newValue.isEmpty || newValue == item.currentValue) continue;
+      changes.add(MapEntry(item.variable, newValue));
+    }
+
+    if (changes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('没有需要修改的变量')),
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('一键配置环境变量'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('将修改以下系统环境变量：'),
+            const SizedBox(height: 8),
+            for (final entry in changes)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  '${entry.key} → ${entry.value}',
+                  style: const TextStyle(fontFamily: 'Consolas', fontSize: 13),
+                ),
+              ),
+            const SizedBox(height: 12),
+            const Text(
+              '此操作需要管理员权限，并将自动创建目标目录。',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认配置'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      _envWriting = true;
+      _error = null;
+    });
+
+    await _envManager.backupCurrentConfig();
+
+    final errors = <String>[];
+    for (final entry in changes) {
+      try {
+        final result = await _envManager.writeVariable(
+          variable: entry.key,
+          value: entry.value,
+          createDir: true,
+        );
+        if (!result.success) {
+          errors.add('${entry.key}: ${result.error}');
+        }
+      } catch (error) {
+        errors.add('${entry.key}: $error');
+      }
+    }
+
+    if (!mounted) return;
+
+    if (errors.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已成功配置 ${changes.length} 个环境变量'),
+          backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+        ),
+      );
+    } else {
+      setState(() => _error = '部分写入失败：\n${errors.join('\n')}');
+    }
+
+    setState(() => _envWriting = false);
+    await _loadEnvConfig();
+  }
+
+  Future<void> _rollbackEnvConfig() async {
+    final backup = _envManager.loadBackup();
+    if (backup == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('没有可回退的配置缓存')),
+      );
+      return;
+    }
+
+    final items = backup.items
+        .where((item) =>
+            item.variable != 'GRADLE_USER_HOME' &&
+            item.source != 'NotSet' &&
+            item.currentValue.isNotEmpty)
+        .toList();
+
+    if (items.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('缓存中没有可回退的变量')),
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认回退环境变量'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('将恢复为上一次的配置：'),
+            const SizedBox(height: 8),
+            for (final item in items)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  '${item.variable} → ${item.currentValue}',
+                  style: const TextStyle(fontFamily: 'Consolas', fontSize: 13),
+                ),
+              ),
+            const SizedBox(height: 12),
+            const Text(
+              '此操作需要管理员权限。',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认回退'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() {
+      _envRollingBack = true;
+      _error = null;
+    });
+
+    try {
+      final results = await _envManager.rollback();
+
+      if (!mounted) return;
+
+      final failures = results.where((r) => !r.success).toList();
+      if (failures.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('已成功回退 ${results.length} 个环境变量'),
+            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+          ),
+        );
+      } else {
+        setState(() =>
+            _error = '部分回退失败：\n${failures.map((r) => '${r.variable}: ${r.error}').join('\n')}');
+      }
+    } catch (error) {
+      setState(() => _error = error.toString());
+    } finally {
+      setState(() => _envRollingBack = false);
+      await _loadEnvConfig();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -205,30 +621,71 @@ class _DetectPageState extends State<DetectPage> {
                           ),
                     ),
                     const SizedBox(height: 24),
-                    _TabTile(
-                      icon: Icons.desktop_windows_outlined,
-                      title: '安装检测',
-                      subtitle: '查找 Android Studio 安装位置与版本',
-                      selected: _activeTab == _PageTab.install,
-                      onTap: () => setState(() => _activeTab = _PageTab.install),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        child: Column(
+                          children: [
+                            _TabTile(
+                              icon: Icons.desktop_windows_outlined,
+                              title: '安装检测',
+                              subtitle: '查找 Android Studio 安装位置与版本',
+                              selected: _activeTab == _PageTab.install,
+                              onTap: () => setState(() => _activeTab = _PageTab.install),
+                            ),
+                            const SizedBox(height: 12),
+                            _TabTile(
+                              icon: Icons.pie_chart_outline,
+                              title: '磁盘占用体检',
+                              subtitle: '统计配置、缓存、日志、SDK 目录大小',
+                              selected: _activeTab == _PageTab.storage,
+                              onTap: () => setState(() => _activeTab = _PageTab.storage),
+                            ),
+                            const SizedBox(height: 12),
+                            _TabTile(
+                              icon: Icons.download_outlined,
+                              title: '版本下载',
+                              subtitle: '获取 Android Studio 最新版本安装包',
+                              selected: _activeTab == _PageTab.download,
+                              onTap: () => setState(() => _activeTab = _PageTab.download),
+                            ),
+                            const SizedBox(height: 12),
+                            _TabTile(
+                              icon: Icons.tune_outlined,
+                              title: '环境配置',
+                              subtitle: '检测并配置 ANDROID_HOME、GRADLE_HOME 等环境变量',
+                              selected: _activeTab == _PageTab.envConfig,
+                              onTap: () {
+                                setState(() => _activeTab = _PageTab.envConfig);
+                                if (_envResult == null) _loadEnvConfig();
+                              },
+                            ),
+                            const SizedBox(height: 12),
+                            _TabTile(
+                              icon: Icons.desktop_windows_outlined,
+                              title: '模拟器运行环境',
+                              subtitle: 'Hyper-V/WHPX 管理 · 硬件/虚拟化/软件环境全面诊断',
+                              selected: _activeTab == _PageTab.hyperV,
+                              onTap: () {
+                                setState(() => _activeTab = _PageTab.hyperV);
+                                if (_hypervResult == null) _loadHyperV();
+                                if (_emuCheckResult == null) _runEmulatorCheck();
+                              },
+                            ),
+                            const SizedBox(height: 12),
+                            _TabTile(
+                              icon: Icons.build_outlined,
+                              title: 'SDK 一键安装',
+                              subtitle: '自动配置 Android SDK 核心组件（无需安装 Android Studio）',
+                              selected: _activeTab == _PageTab.sdkSetup,
+                              onTap: () {
+                                setState(() => _activeTab = _PageTab.sdkSetup);
+                                if (_sdkStatus == null) _detectSdkStatus();
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
-                    const SizedBox(height: 12),
-                    _TabTile(
-                      icon: Icons.pie_chart_outline,
-                      title: '磁盘占用体检',
-                      subtitle: '统计配置、缓存、日志、SDK 目录大小',
-                      selected: _activeTab == _PageTab.storage,
-                      onTap: () => setState(() => _activeTab = _PageTab.storage),
-                    ),
-                    const SizedBox(height: 12),
-                    _TabTile(
-                      icon: Icons.download_outlined,
-                      title: '版本下载',
-                      subtitle: '获取 Android Studio 最新版本安装包',
-                      selected: _activeTab == _PageTab.download,
-                      onTap: () => setState(() => _activeTab = _PageTab.download),
-                    ),
-                    const Spacer(),
                   ],
                 ),
               ),
@@ -239,6 +696,9 @@ class _DetectPageState extends State<DetectPage> {
               _PageTab.install => _buildInstallTab(),
               _PageTab.storage => _buildStorageTab(),
               _PageTab.download => _buildDownloadTab(),
+              _PageTab.envConfig => _buildEnvConfigTab(),
+              _PageTab.hyperV => _buildHyperVTab(),
+              _PageTab.sdkSetup => _buildSdkSetupTab(),
             },
           ),
         ],
@@ -362,6 +822,52 @@ class _DetectPageState extends State<DetectPage> {
         for (final entry in visibleEntries)
           _StorageEntryTile(entry: entry),
       ],
+    );
+  }
+
+  Widget _buildSystemVersionBanner() {
+    final info = DownloadManager.getSystemVersion();
+    final buildStr = info['build'] ?? '';
+    final build = int.tryParse(buildStr) ?? 0;
+    final isWin11 = DownloadManager.isWindows11();
+    final sysLabel = isWin11 ? 'Windows 11' : 'Windows 10';
+
+    if (build == 0) return const SizedBox.shrink();
+
+    final isOld = !DownloadManager.isWindows10Plus();
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      color: isOld
+          ? Theme.of(context).colorScheme.errorContainer.withValues(alpha: 0.3)
+          : Theme.of(context).colorScheme.surfaceContainerLowest,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            Icon(
+              isOld ? Icons.warning_amber_outlined : Icons.info_outline,
+              size: 18,
+              color: isOld
+                  ? Theme.of(context).colorScheme.error
+                  : Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                isOld
+                    ? '$sysLabel Build $buildStr — 版本过低，新版 Android Studio (2024.3+) 需要 Win10 2004 (Build 19041) 及以上'
+                    : '$sysLabel Build $buildStr — 兼容所有版本',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: isOld
+                          ? Theme.of(context).colorScheme.error
+                          : null,
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -492,6 +998,7 @@ class _DetectPageState extends State<DetectPage> {
           if (_versionLoading && _versionProgress != null)
             _ProgressPanel(progress: _versionProgress!),
           if (_error != null) _ErrorPanel(message: _error!),
+          _buildSystemVersionBanner(),
           if (_versionWarnings != null)
             _WarningPanel(messages: _versionWarnings!),
           Expanded(
@@ -521,6 +1028,1207 @@ class _DetectPageState extends State<DetectPage> {
           ),
         ],
       ),
+    );
+  }
+
+  // --- SDK 管理 ---
+
+  SdkPackageInfo? _sdkPackageInfo;
+  SdkActionResult? _sdkActionResult;
+  final Set<String> _selectedPackages = {};
+
+  void _detectSdkStatus() {
+    final status = SdkSetupManager.quickStatus();
+    setState(() => _sdkStatus = status);
+    _loadSdkPackages();
+  }
+
+  Future<void> _loadSdkPackages() async {
+    setState(() {
+      _sdkSetupLoading = true;
+      _sdkSetupMessage = '正在查询包列表...';
+    });
+    try {
+      final info = await _sdkSetupManager.listPackages(
+        sdkDir: _sdkStatus?.sdkDir,
+        mirror: _sdkMirror,
+        proxy: _sdkProxyController.text.trim().isEmpty
+            ? null
+            : _sdkProxyController.text.trim(),
+      );
+      setState(() {
+        _sdkPackageInfo = info;
+        _sdkStatus = SdkSetupManager.quickStatus();
+      });
+    } catch (e) {
+      setState(() => _sdkSetupMessage = '查询失败: $e');
+    } finally {
+      setState(() => _sdkSetupLoading = false);
+    }
+  }
+
+  Future<void> _runSdkAction(String action, List<String> pkgs) async {
+    if (pkgs.isEmpty) return;
+    setState(() {
+      _sdkSetupLoading = true;
+      _sdkSetupPercent = 0;
+      _sdkSetupMessage = action == 'install' ? '正在安装...' : '正在卸载...';
+      _sdkActionResult = null;
+    });
+    try {
+      final result = action == 'install'
+          ? await _sdkSetupManager.install(
+              packages: pkgs,
+              sdkDir: _sdkStatus?.sdkDir,
+              mirror: _sdkMirror,
+              proxy: _sdkProxyController.text.trim().isEmpty
+                  ? null
+                  : _sdkProxyController.text.trim(),
+              onProgress: (pct, msg) {
+                if (!mounted) return;
+                setState(() {
+                  _sdkSetupPercent = pct;
+                  _sdkSetupMessage = msg;
+                });
+              },
+            )
+          : await _sdkSetupManager.uninstall(
+              packages: pkgs,
+              sdkDir: _sdkStatus?.sdkDir,
+              onProgress: (pct, msg) {
+                if (!mounted) return;
+                setState(() {
+                  _sdkSetupPercent = pct;
+                  _sdkSetupMessage = msg;
+                });
+              },
+            );
+      setState(() {
+        _sdkActionResult = result;
+        _sdkSetupMessage = result.message;
+      });
+      // 重新加载
+      await _loadSdkPackages();
+    } catch (e) {
+      setState(() => _sdkSetupMessage = '操作失败: $e');
+    } finally {
+      setState(() => _sdkSetupLoading = false);
+    }
+  }
+
+  Widget _buildSdkSetupTab() {
+    final status = _sdkStatus;
+    final info = _sdkPackageInfo;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _SectionHeader(
+            icon: Icons.build_outlined,
+            title: 'SDK 管理',
+            trailing: status != null ? status.sdkDir : null,
+            action: _ActionButton(
+              label: '刷新',
+              icon: Icons.refresh,
+              loading: _sdkSetupLoading,
+              onPressed: _sdkSetupLoading ? null : _detectSdkStatus,
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (_sdkSetupLoading)
+            Card(
+              margin: const EdgeInsets.only(bottom: 16),
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  children: [
+                    LinearProgressIndicator(
+                      value: _sdkSetupPercent > 0 ? _sdkSetupPercent / 100 : null,
+                    ),
+                    const SizedBox(height: 12),
+                    Text('$_sdkSetupPercent% — $_sdkSetupMessage',
+                        style: Theme.of(context).textTheme.bodyMedium),
+                  ],
+                ),
+              ),
+            ),
+          if (_sdkActionResult != null)
+            Card(
+              margin: const EdgeInsets.only(bottom: 12),
+              color: _sdkActionResult!.success
+                  ? Colors.green.withValues(alpha: 0.1)
+                  : Colors.red.withValues(alpha: 0.1),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(_sdkActionResult!.message,
+                    style: TextStyle(
+                        color: _sdkActionResult!.success
+                            ? Colors.green.shade800
+                            : Colors.red.shade800)),
+              ),
+            ),
+          if (info != null) _buildSdkPackageManager(info, status),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSdkPackageManager(SdkPackageInfo info, SdkStatus? status) {
+    // 按类别分组可用包
+    final categories = <String, List<String>>{};
+    for (final pkg in info.available) {
+      final cat = pkg.split(';').first;
+      categories.putIfAbsent(cat, () => []);
+      categories[cat]!.add(pkg);
+    }
+
+    return Expanded(
+      child: ListView(
+        children: [
+          // SDK 目录 + Java
+          _buildSdkInfoCard(status),
+          const SizedBox(height: 10),
+
+          // 已安装包
+          if (info.installed.isNotEmpty) ...[
+            _buildSectionTitle('已安装 (${info.installed.length})'),
+            for (final pkg in info.installed)
+              _InstalledPackageTile(
+                package: pkg,
+                onUninstall: () => _runSdkAction('uninstall', [pkg]),
+              ),
+            const SizedBox(height: 16),
+          ],
+
+          // 可用包 - 按类别
+          _buildSectionTitle('可用包（勾选后安装）'),
+          const SizedBox(height: 8),
+
+          // 下载源 & 代理
+          _buildNetworkConfigCard(),
+          const SizedBox(height: 10),
+
+          // 常用类别快速安装
+          _buildQuickInstallCard(info),
+          const SizedBox(height: 10),
+
+          // 包分类列表
+          for (final entry in categories.entries)
+            _PackageCategoryCard(
+              category: entry.key,
+              packages: entry.value,
+              installed: info.installed,
+              selected: _selectedPackages,
+              onToggle: (pkg, sel) {
+                setState(() {
+                  if (sel) {
+                    _selectedPackages.add(pkg);
+                  } else {
+                    _selectedPackages.remove(pkg);
+                  }
+                });
+              },
+            ),
+
+          // 安装按钮
+          if (_selectedPackages.isNotEmpty && !_sdkSetupLoading)
+            Padding(
+              padding: const EdgeInsets.only(top: 16),
+              child: ElevatedButton.icon(
+                onPressed: () =>
+                    _runSdkAction('install', _selectedPackages.toList()),
+                icon: const Icon(Icons.download),
+                label: Text('安装选中 (${_selectedPackages.length})'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSdkInfoCard(SdkStatus? status) {
+    if (status == null) return const SizedBox.shrink();
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.folder_outlined, size: 20, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SelectableText(status.sdkDir,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(fontFamily: 'Consolas')),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Icon(status.hasJava ? Icons.check_circle : Icons.error_outline,
+                    size: 18, color: status.hasJava ? Colors.green : Colors.red),
+                const SizedBox(width: 8),
+                Text(status.hasJava ? 'Java: 已安装' : 'Java: 未检测到',
+                    style: Theme.of(context).textTheme.bodySmall),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionTitle(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(title, style: Theme.of(context).textTheme.titleSmall),
+    );
+  }
+
+  Widget _buildNetworkConfigCard() {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('下载源', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              value: _sdkMirror,
+              isDense: true,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'flutter', child: Text('Flutter CDN (推荐)')),
+                DropdownMenuItem(value: 'tencent', child: Text('腾讯云')),
+                DropdownMenuItem(value: 'bfsu', child: Text('北外镜像')),
+                DropdownMenuItem(value: 'official', child: Text('Google 官方')),
+              ],
+              onChanged: (v) => setState(() => _sdkMirror = v ?? 'flutter'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _sdkProxyController,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(fontFamily: 'Consolas'),
+              decoration: const InputDecoration(
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                border: OutlineInputBorder(),
+                hintText: '留空不使用代理',
+                labelText: '代理地址（可选）',
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildQuickInstallCard(SdkPackageInfo info) {
+    final quickPkgs = {
+      'platform-tools': 'ADB / Platform-Tools',
+      'emulator': 'Android Emulator',
+      'build-tools;36.0.0': 'Build Tools 36.0.0',
+      'platforms;android-36': 'Android 36 Platform',
+      'sources;android-36': 'Android 36 Sources',
+      'extras;google;Android_Emulator_Hypervisor_Driver': 'AEHD 驱动',
+    };
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('快速安装核心包', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final entry in quickPkgs.entries)
+                  FilterChip(
+                    label: Text(entry.value),
+                    selected: _selectedPackages.contains(entry.key),
+                    onSelected: (sel) {
+                      setState(() {
+                        if (sel) {
+                          _selectedPackages.add(entry.key);
+                        } else {
+                          _selectedPackages.remove(entry.key);
+                        }
+                      });
+                    },
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- 环境配置 ---
+
+  Widget _buildEnvConfigTab() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _SectionHeader(
+            icon: Icons.tune_outlined,
+            title: '环境变量配置',
+            trailing: _envResult != null
+                ? '${_envResult!.items.length} 项变量 · ${_envResult!.pathEntries.length} 项 PATH'
+                : null,
+            action: _ActionButton(
+              label: _envResult != null ? '重新检测' : '检测环境',
+              icon: Icons.refresh,
+              loading: _envLoading,
+              onPressed: _envLoading ? null : _loadEnvConfig,
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (_envWriting)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    '正在写入环境变量（请在 UAC 弹窗中确认）…',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ],
+              ),
+            ),
+          if (_envLoading && _envProgress != null)
+            _ProgressPanel(progress: _envProgress!),
+          if (_error != null) _ErrorPanel(message: _error!),
+          Expanded(child: _buildEnvConfigResult()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEnvConfigResult() {
+    if (_envResult == null && !_envLoading) {
+      return const _EmptyPanel(
+        hint: '点击右上角「检测环境」查看当前环境变量配置',
+      );
+    }
+
+    if (_envResult == null) return const SizedBox.shrink();
+
+    final items = _envResult!.items;
+    final pathEntries = _envResult!.pathEntries;
+
+    return ListView(
+      children: [
+        for (final item in items)
+          _EnvPathCard(
+            item: item,
+            controller: _envControllers[item.variable],
+            onApply: (value) => _writeEnvVariable(
+              item.variable,
+              value,
+            ),
+            onApplyWithDir: (value) => _writeEnvVariable(
+              item.variable,
+              value,
+              createDir: true,
+            ),
+          ),
+        if (pathEntries.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Card(
+            margin: const EdgeInsets.only(bottom: 10),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.alt_route_outlined,
+                          size: 20,
+                          color: Theme.of(context).colorScheme.primary),
+                      const SizedBox(width: 8),
+                      Text(
+                        'PATH 中的 SDK 子目录',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  for (final entry in pathEntries)
+                    _PathEntryTile(
+                      entry: entry,
+                      onAppend: () => _appendPathToSystem(entry.fullPath),
+                      onAppendWithDir: () =>
+                          _appendPathToSystem(entry.fullPath, createDir: true),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+        Padding(
+          padding: const EdgeInsets.only(top: 8, bottom: 24),
+          child: Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            children: [
+              if (items.any((item) =>
+                  item.variable != 'GRADLE_USER_HOME' &&
+                  _envControllers[item.variable]?.text.trim().isNotEmpty ==
+                      true))
+                FilledButton.icon(
+                  onPressed: _envWriting ? null : _oneClickRewrite,
+                  icon: _envWriting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.auto_fix_high),
+                  label: const Text('一键配置所有环境变量'),
+                ),
+              if (_envManager.loadBackup() != null)
+                OutlinedButton.icon(
+                  onPressed: (_envWriting || _envRollingBack)
+                      ? null
+                      : _rollbackEnvConfig,
+                  icon: _envRollingBack
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.undo),
+                  label: const Text('回退上一次配置'),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildOperationsCard(HypervResult result) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    // Hyper-V status
+    final hypervFeatures = result.features
+        .where((f) => f.name.startsWith('Microsoft-Hyper-V'))
+        .toList();
+    final hypervEnabled = hypervFeatures.isNotEmpty &&
+        hypervFeatures.every((f) => f.state == 'Enabled' || f.state == 'EnablePending');
+
+    // WHPX status
+    final whpxFeature = result.features
+        .where((f) => f.name == 'HypervisorPlatform')
+        .firstOrNull;
+    final whpxEnabled = whpxFeature?.state == 'Enabled' ||
+        whpxFeature?.state == 'EnablePending';
+
+    final isToggling = _hypervToggling || _whpxToggling;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('操作', style: textTheme.titleSmall),
+            const SizedBox(height: 16),
+
+            // --- Hyper-V section ---
+            Row(
+              children: [
+                Icon(Icons.dns_outlined, size: 18, color: hypervEnabled ? Colors.green : colorScheme.onSurfaceVariant),
+                const SizedBox(width: 8),
+                Text('Hyper-V', style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: (hypervEnabled ? Colors.green : colorScheme.outline).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    hypervEnabled ? '已启用' : '已关闭',
+                    style: textTheme.labelSmall?.copyWith(
+                      color: hypervEnabled ? Colors.green : colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '用于运行 WSL2、Docker Desktop 等基于 Hyper-V 的服务',
+              style: textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 8),
+            if (hypervEnabled)
+              OutlinedButton.icon(
+                onPressed: isToggling ? null : () => _toggleHyperV(false),
+                icon: isToggling
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.stop_circle_outlined, size: 18),
+                label: const Text('关闭 Hyper-V'),
+              )
+            else
+              FilledButton.icon(
+                onPressed: isToggling ? null : () => _toggleHyperV(true),
+                icon: isToggling
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.play_circle_outlined, size: 18),
+                label: const Text('启用 Hyper-V'),
+              ),
+
+            const SizedBox(height: 20),
+            Divider(color: colorScheme.outlineVariant.withValues(alpha: 0.5)),
+            const SizedBox(height: 16),
+
+            // --- WHPX section ---
+            Row(
+              children: [
+                Icon(Icons.phone_android, size: 18, color: whpxEnabled ? Colors.green : colorScheme.onSurfaceVariant),
+                const SizedBox(width: 8),
+                Text('WHPX (Hypervisor Platform)', style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: (whpxEnabled ? Colors.green : colorScheme.outline).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    whpxEnabled ? '已启用' : '已关闭',
+                    style: textTheme.labelSmall?.copyWith(
+                      color: whpxEnabled ? Colors.green : colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '让 Android 模拟器通过标准 API 使用 Hyper-V 虚拟化能力，实现与 Hyper-V 共存',
+              style: textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 8),
+            if (whpxEnabled)
+              OutlinedButton.icon(
+                onPressed: isToggling ? null : () => _toggleWHPX(false),
+                icon: isToggling
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.stop_circle_outlined, size: 18),
+                label: const Text('关闭 WHPX'),
+              )
+            else
+              FilledButton.icon(
+                onPressed: isToggling ? null : () => _toggleWHPX(true),
+                icon: isToggling
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.play_circle_outlined, size: 18),
+                label: const Text('启用 WHPX'),
+              ),
+
+            const SizedBox(height: 20),
+            Divider(color: colorScheme.outlineVariant.withValues(alpha: 0.5)),
+            const SizedBox(height: 12),
+
+            // --- Relationship explanation ---
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Hyper-V 与 WHPX 的关系', style: textTheme.labelLarge),
+                  const SizedBox(height: 6),
+                  Text(
+                    '• 两者独立控制，可单独开关\n'
+                    '• Hyper-V 是底层虚拟化平台，WHPX 是它的访问接口\n'
+                    '• 想用 Android 模拟器 + Hyper-V 共存 → 两者都开\n'
+                    '• 想用 VirtualBox/VMware → 两者都关\n'
+                    '• 只用 WSL/Docker 不用模拟器 → 只开 Hyper-V，不开 WHPX',
+                    style: textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant, height: 1.6),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Icon(Icons.restart_alt, size: 18, color: colorScheme.onSurfaceVariant),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '开启或关闭后必须重启计算机才能生效。',
+                    style: textTheme.bodySmall,
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _confirmRestart,
+                  icon: const Icon(Icons.restart_alt, size: 18),
+                  label: const Text('立即重启'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmulatorCheckSection() {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    if (_emuCheckLoading) {
+      return Card(
+        margin: const EdgeInsets.only(bottom: 10),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 20, height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 12),
+              Text('正在检测系统环境...', style: textTheme.bodyMedium),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final mergedResult = _buildMergedCheckResult();
+    if (mergedResult == null) return const SizedBox.shrink();
+
+    final groups = mergedResult.groupedByCategory;
+    if (groups.isEmpty) return const SizedBox.shrink();
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.checklist, size: 20, color: colorScheme.primary),
+                const SizedBox(width: 8),
+                Text('运行环境全面检测', style: textTheme.titleSmall),
+                const Spacer(),
+                if (mergedResult.warningCount > 0)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.orange.withValues(alpha: 0.35)),
+                    ),
+                    child: Text(
+                      '${mergedResult.warningCount} 个问题',
+                      style: textTheme.labelSmall?.copyWith(
+                        color: Colors.orange,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            for (final group in groups) ...[
+              Padding(
+                padding: const EdgeInsets.only(top: 14, bottom: 6),
+                child: Row(
+                  children: [
+                    Icon(
+                      _categoryIcon(group.key),
+                      size: 16,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      group.key,
+                      style: textTheme.labelLarge?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Container(
+                        height: 1,
+                        color: colorScheme.outlineVariant.withValues(alpha: 0.5),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              for (final check in group.value)
+                _EmulatorCheckTile(check: check),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData _categoryIcon(String category) => switch (category) {
+        '硬件环境' => Icons.memory,
+        '虚拟化配置' => Icons.dns_outlined,
+        '模拟器配置' => Icons.phone_android,
+        '软件环境' => Icons.apps,
+        _ => Icons.checklist,
+      };
+
+  /// Merges Hyper-V feature data into emulator check results,
+  /// replacing "unknown" VirtualMachinePlatform/Windows Sandbox items
+  /// and adding HypervisorPlatform status from elevated detection.
+  EmulatorCheckResult? _buildMergedCheckResult() {
+    if (_emuCheckResult == null) return null;
+
+    final merged = <EmulatorCheck>[];
+    final hypervFeatureNames = <String>{};
+
+    // Build EmulatorCheck items from Hyper-V features
+    if (_hypervResult != null) {
+      for (final f in _hypervResult!.features) {
+        hypervFeatureNames.add(f.name);
+        final (status, detail) = switch (f.state) {
+          'Enabled' => ('ok', '已启用'),
+          'EnablePending' => ('warning', '待重启生效'),
+          _ => ('warning', '未启用'),
+        };
+        final suggestion = f.name == 'HypervisorPlatform' && f.state != 'Enabled'
+            ? 'WHPX 让第三方模拟器通过标准 API 使用 Hyper-V 虚拟化能力，启用后模拟器可与 Hyper-V 共存'
+            : '';
+        merged.add(EmulatorCheck(
+          name: f.name,
+          category: '虚拟化配置',
+          label: f.label,
+          status: status,
+          detail: detail,
+          suggestion: suggestion,
+        ));
+      }
+    }
+
+    // Add remaining checks from emulator check result, skipping hyperv duplicates and hidden items
+    for (final check in _emuCheckResult!.checks) {
+      // Skip checks that hyperv already provides better data for
+      if (check.name == 'virtual_machine_platform' ||
+          check.name == 'windows_sandbox') {
+        continue; // hyperv features cover these
+      }
+      // Hide redundant system info that clutters the UI
+      if (check.name == 'system_ram' || check.name == 'disk_space') {
+        continue;
+      }
+      merged.add(check);
+    }
+
+    return EmulatorCheckResult(checks: merged);
+  }
+
+  // --- Hyper-V ---
+
+  Future<void> _loadHyperV() async {
+    setState(() {
+      _hypervLoading = true;
+      _hypervProgress = const ScanProgress(percent: 0, message: '正在启动检测…');
+      _error = null;
+    });
+
+    try {
+      final result = await _hypervManager.detect(
+        onProgress: (progress) {
+          if (!mounted) return;
+          setState(() => _hypervProgress = progress);
+        },
+      );
+      setState(() {
+        _hypervResult = result;
+        _hypervProgress = const ScanProgress(percent: 100, message: '检测完成');
+      });
+    } catch (error) {
+      setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _hypervLoading = false);
+    }
+  }
+
+  Future<void> _runEmulatorCheck() async {
+    setState(() {
+      _emuCheckLoading = true;
+      _error = null;
+    });
+
+    try {
+      final result = await _emuCheckManager.runChecks();
+      if (!mounted) return;
+      setState(() {
+        _emuCheckResult = result;
+      });
+    } catch (error) {
+      // silently ignore - emulator check is supplementary
+    } finally {
+      if (mounted) setState(() => _emuCheckLoading = false);
+    }
+  }
+
+  void _confirmRestart() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('确认重启'),
+        content: const Text('系统将立即重启以使 Hyper-V 配置生效，未保存的数据可能会丢失。确定要重启吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              Process.run('shutdown', ['/r', '/t', '0']);
+            },
+            child: const Text('立即重启'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _toggleHyperV(bool enable) async {
+    setState(() {
+      _hypervToggling = true;
+      _hypervToggleProgress = const ScanProgress(percent: 5, message: '准备中...');
+      _error = null;
+    });
+
+    try {
+      final result = await _hypervManager.toggle(
+        enable: enable,
+        onProgress: (progress) {
+          if (!mounted) return;
+          setState(() => _hypervToggleProgress = progress);
+        },
+      );
+      if (!mounted) return;
+
+      if (result.success) {
+        // 操作成功后重新检测状态
+        await _loadHyperV();
+        if (!mounted) return;
+        final hasFailed = result.details.contains('FAILED');
+        if (hasFailed) {
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: Text(result.message),
+              content: SingleChildScrollView(
+                child: SelectableText(result.details),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('确定'),
+                ),
+              ],
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(result.message)),
+          );
+        }
+      } else {
+        // 操作失败，弹窗显示详情
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Text(result.message),
+            content: SingleChildScrollView(
+              child: SelectableText(result.details.isNotEmpty ? result.details : '无详细信息'),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('确定'),
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (error) {
+      setState(() => _error = error.toString());
+    } finally {
+      if (mounted) {
+        setState(() {
+          _hypervToggling = false;
+          _hypervToggleProgress = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _toggleWHPX(bool enable) async {
+    setState(() {
+      _whpxToggling = true;
+      _error = null;
+    });
+
+    try {
+      // WHPX depends on VirtualMachinePlatform, toggle both
+      final features = enable
+          ? ['VirtualMachinePlatform', 'HypervisorPlatform'] // enable dependency first
+          : ['HypervisorPlatform', 'VirtualMachinePlatform']; // disable WHPX first
+
+      var lastResult = await _hypervManager.toggleFeature(
+        featureName: features[0],
+        enable: enable,
+        onProgress: (progress) {
+          if (!mounted) return;
+          setState(() => _hypervToggleProgress = progress);
+        },
+      );
+
+      if (!mounted) return;
+      if (!lastResult.success) {
+        _showToggleError(lastResult);
+        return;
+      }
+
+      if (features.length > 1) {
+        lastResult = await _hypervManager.toggleFeature(
+          featureName: features[1],
+          enable: enable,
+          onProgress: (progress) {
+            if (!mounted) return;
+            setState(() => _hypervToggleProgress = progress);
+          },
+        );
+        if (!mounted) return;
+      }
+
+      if (lastResult.success) {
+        await _loadHyperV();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(lastResult.message)),
+        );
+      } else {
+        _showToggleError(lastResult);
+      }
+    } catch (error) {
+      setState(() => _error = error.toString());
+    } finally {
+      if (mounted) {
+        setState(() {
+          _whpxToggling = false;
+          _hypervToggleProgress = null;
+        });
+      }
+    }
+  }
+
+  void _showToggleError(HypervToggleResult result) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(result.message),
+        content: SingleChildScrollView(
+          child: SelectableText(result.details.isNotEmpty ? result.details : '无详细信息'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHyperVTab() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _SectionHeader(
+            icon: Icons.desktop_windows_outlined,
+            title: '模拟器运行环境',
+            trailing: _hypervResult?.osEdition,
+            action: _ActionButton(
+              label: '全部重新检测',
+              icon: Icons.refresh,
+              loading: _hypervLoading || _emuCheckLoading,
+              onPressed: (_hypervLoading || _emuCheckLoading)
+                  ? null
+                  : () { _loadHyperV(); _runEmulatorCheck(); },
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (_hypervToggling && _hypervToggleProgress != null)
+            _ProgressPanel(progress: _hypervToggleProgress!),
+          if (_hypervLoading && _hypervProgress != null)
+            _ProgressPanel(progress: _hypervProgress!),
+          if (_error != null) _ErrorPanel(message: _error!),
+          Expanded(child: _buildHyperVResult()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHyperVResult() {
+    if (_hypervResult == null && !_hypervLoading) {
+      return const _EmptyPanel(
+        hint: '点击右上角「检测状态」查看 Hyper-V 各组件状态',
+      );
+    }
+
+    if (_hypervResult == null) return const SizedBox.shrink();
+
+    final result = _hypervResult!;
+
+    return ListView(
+      children: [
+        // OS 版本信息卡片
+        Card(
+          margin: const EdgeInsets.only(bottom: 10),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline,
+                    size: 20,
+                    color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '系统版本：${result.osEdition}',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      if (result.isHomeEdition)
+                        Text(
+                          'Windows 家庭版 — 启用 Hyper-V 时会自动安装所需组件',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: Theme.of(context).colorScheme.tertiary,
+                              ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        // 各功能状态卡片
+        Card(
+          margin: const EdgeInsets.only(bottom: 10),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '组件状态',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 12),
+                for (final feature in result.features)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      children: [
+                        Icon(
+                          feature.state == 'Enabled'
+                              ? Icons.check_circle
+                              : feature.state == 'EnablePending'
+                                  ? Icons.hourglass_top
+                                  : Icons.cancel_outlined,
+                          size: 18,
+                          color: feature.state == 'Enabled'
+                              ? Colors.green
+                              : feature.state == 'EnablePending'
+                                  ? Colors.blue
+                                  : Colors.orange,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            feature.label,
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ),
+                        Text(
+                          feature.state == 'Enabled'
+                              ? '已启用'
+                              : feature.state == 'EnablePending'
+                                  ? '待重启生效'
+                                  : '已关闭',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: feature.state == 'Enabled'
+                                    ? Colors.green
+                                    : feature.state == 'EnablePending'
+                                        ? Colors.blue
+                                        : Colors.orange,
+                              ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        // 系统环境检测结果
+        _buildEmulatorCheckSection(),
+        // 操作：Hyper-V / WHPX 独立控制
+        _buildOperationsCard(result),
+      ],
     );
   }
 }
@@ -838,6 +2546,119 @@ class _WarningPanel extends StatelessWidget {
                     color:
                         colorScheme.onTertiaryContainer.withValues(alpha: 0.8),
                     fontSize: 13,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmulatorCheckTile extends StatefulWidget {
+  const _EmulatorCheckTile({required this.check});
+
+  final EmulatorCheck check;
+
+  @override
+  State<_EmulatorCheckTile> createState() => _EmulatorCheckTileState();
+}
+
+class _EmulatorCheckTileState extends State<_EmulatorCheckTile> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final check = widget.check;
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    final hasSuggestion = check.suggestion.isNotEmpty &&
+        (check.status == 'warning' || check.status == 'error');
+
+    IconData icon;
+    Color iconColor;
+    switch (check.status) {
+      case 'ok':
+        icon = Icons.check_circle;
+        iconColor = Colors.green;
+      case 'warning':
+        icon = Icons.warning_amber_rounded;
+        iconColor = Colors.orange;
+      case 'error':
+        icon = Icons.error_outline;
+        iconColor = Colors.red;
+      case 'info':
+        icon = Icons.info_outline;
+        iconColor = Colors.blue;
+      default:
+        icon = Icons.help_outline;
+        iconColor = colorScheme.outline;
+    }
+
+    return InkWell(
+      onTap: hasSuggestion ? () => setState(() => _expanded = !_expanded) : null,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(icon, size: 18, color: iconColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        check.label,
+                        style: textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      if (check.detail.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          check.detail,
+                          style: textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                            fontFamily: 'Consolas',
+                            height: 1.4,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                if (hasSuggestion)
+                  Icon(
+                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+              ],
+            ),
+            if (hasSuggestion && _expanded)
+              Padding(
+                padding: const EdgeInsets.only(left: 26, top: 6),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: iconColor.withValues(alpha: 0.06),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: iconColor.withValues(alpha: 0.2)),
+                  ),
+                  child: Text(
+                    check.suggestion,
+                    style: textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                      height: 1.5,
+                    ),
                   ),
                 ),
               ),
@@ -1398,6 +3219,372 @@ class _VersionCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _EnvPathCard extends StatelessWidget {
+  const _EnvPathCard({
+    required this.item,
+    required this.controller,
+    required this.onApply,
+    required this.onApplyWithDir,
+  });
+
+  final EnvPathItem item;
+  final TextEditingController? controller;
+  final void Function(String value) onApply;
+  final void Function(String value) onApplyWithDir;
+
+  Color _statusColor(BuildContext context) {
+    if (item.source == 'NotSet') return Theme.of(context).colorScheme.outline;
+    if (item.exists) return Colors.green;
+    return Theme.of(context).colorScheme.error;
+  }
+
+  String _statusLabel() {
+    if (item.source == 'NotSet') return '未配置';
+    if (item.exists) return '正常';
+    return '路径不存在';
+  }
+
+  IconData _varIcon() {
+    if (item.variable.contains('SDK') || item.variable.contains('ANDROID_HOME')) {
+      return Icons.phone_android;
+    }
+    if (item.variable.contains('GRADLE')) {
+      return Icons.build_circle_outlined;
+    }
+    return Icons.settings_outlined;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(_varIcon(), size: 20, color: colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    item.variable,
+                    style: textTheme.titleSmall?.copyWith(
+                      fontFamily: 'Consolas',
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: _statusColor(context).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: _statusColor(context).withValues(alpha: 0.35),
+                    ),
+                  ),
+                  child: Text(
+                    _statusLabel(),
+                    style: textTheme.labelSmall?.copyWith(
+                      color: _statusColor(context),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              item.label,
+              style: textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 12),
+            if (item.currentValue.isNotEmpty) ...[
+              Row(
+                children: [
+                  Text(
+                    '当前值：',
+                    style: textTheme.labelMedium?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  Expanded(
+                    child: SelectableText(
+                      item.currentValue,
+                      style: textTheme.bodySmall?.copyWith(
+                        fontFamily: 'Consolas',
+                        color: colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                  _CopyButton(value: item.currentValue),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Wrap(
+                spacing: 12,
+                children: [
+                  Text(
+                    '来源：${item.source}',
+                    style: textTheme.labelSmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  if (item.exists && item.sizeHuman.isNotEmpty)
+                    Text(
+                      '大小：${item.sizeHuman}',
+                      style: textTheme.labelSmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                ],
+              ),
+            ],
+            if (item.currentValue.isEmpty)
+              Text(
+                '未设置',
+                style: textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            const SizedBox(height: 12),
+            if (controller != null) ...[
+              TextField(
+                controller: controller,
+                style: textTheme.bodySmall?.copyWith(fontFamily: 'Consolas'),
+                decoration: InputDecoration(
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  border: const OutlineInputBorder(),
+                  labelText: '新路径',
+                  hintText: item.suggestedDefault.isNotEmpty
+                      ? item.suggestedDefault
+                      : '输入新路径',
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      final value = controller!.text.trim();
+                      if (value.isNotEmpty) onApply(value);
+                    },
+                    icon: const Icon(Icons.check, size: 16),
+                    label: const Text('应用'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      final value = controller!.text.trim();
+                      if (value.isNotEmpty) onApplyWithDir(value);
+                    },
+                    icon: const Icon(Icons.create_new_folder_outlined, size: 16),
+                    label: const Text('创建目录并应用'),
+                  ),
+                  if (item.suggestedDefault.isNotEmpty &&
+                      item.suggestedDefault != controller!.text)
+                    TextButton(
+                      onPressed: () {
+                        controller!.text = item.suggestedDefault;
+                      },
+                      child: const Text('使用默认值'),
+                    ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PathEntryTile extends StatelessWidget {
+  const _PathEntryTile({
+    required this.entry,
+    required this.onAppend,
+    required this.onAppendWithDir,
+  });
+
+  final EnvPathEntry entry;
+  final VoidCallback onAppend;
+  final VoidCallback onAppendWithDir;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    Color statusColor;
+    String statusLabel;
+    if (entry.inPath) {
+      statusColor = Colors.green;
+      statusLabel = '已在 PATH';
+    } else if (entry.exists) {
+      statusColor = colorScheme.tertiary;
+      statusLabel = '未在 PATH';
+    } else {
+      statusColor = colorScheme.outline;
+      statusLabel = '目录不存在';
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: statusColor.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: statusColor.withValues(alpha: 0.35)),
+            ),
+            child: Text(
+              statusLabel,
+              style: textTheme.labelSmall?.copyWith(
+                color: statusColor,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(entry.subDir, style: textTheme.bodySmall),
+                if (entry.fullPath.isNotEmpty)
+                  Text(
+                    entry.fullPath,
+                    style: textTheme.labelSmall?.copyWith(
+                      fontFamily: 'Consolas',
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+              ],
+            ),
+          ),
+          if (!entry.inPath && entry.exists) ...[
+            const SizedBox(width: 8),
+            TextButton(
+              onPressed: onAppend,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('追加到 PATH'),
+            ),
+          ],
+          if (!entry.inPath && !entry.exists) ...[
+            const SizedBox(width: 8),
+            TextButton(
+              onPressed: onAppendWithDir,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('创建并追加'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _InstalledPackageTile extends StatelessWidget {
+  final String package;
+  final VoidCallback onUninstall;
+
+  const _InstalledPackageTile({
+    required this.package,
+    required this.onUninstall,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 4),
+      child: ListTile(
+        dense: true,
+        leading: const Icon(Icons.check_circle, color: Colors.green, size: 20),
+        title: Text(package, style: const TextStyle(fontSize: 13)),
+        trailing: IconButton(
+          icon: const Icon(Icons.delete_outline, size: 20, color: Colors.red),
+          tooltip: '卸载',
+          onPressed: onUninstall,
+        ),
+      ),
+    );
+  }
+}
+
+class _PackageCategoryCard extends StatelessWidget {
+  final String category;
+  final List<String> packages;
+  final List<String> installed;
+  final Set<String> selected;
+  final void Function(String pkg, bool selected) onToggle;
+
+  const _PackageCategoryCard({
+    required this.category,
+    required this.packages,
+    required this.installed,
+    required this.selected,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ExpansionTile(
+        title: Text(category, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+        childrenPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        children: packages.map((pkg) {
+          final isInstalled = installed.contains(pkg);
+          final isSelected = selected.contains(pkg);
+          return CheckboxListTile(
+            dense: true,
+            value: isInstalled || isSelected,
+            onChanged: isInstalled
+                ? null
+                : (v) => onToggle(pkg, v ?? false),
+            title: Text(
+              pkg,
+              style: TextStyle(
+                fontSize: 12,
+                color: isInstalled ? Colors.green : null,
+                decoration: isInstalled ? TextDecoration.none : null,
+              ),
+            ),
+            secondary: isInstalled
+                ? const Icon(Icons.check_circle, color: Colors.green, size: 18)
+                : null,
+          );
+        }).toList(),
       ),
     );
   }

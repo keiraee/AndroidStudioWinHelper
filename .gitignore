@@ -48,3 +48,4 @@ app.*.map.json
 .claude/
 .md/
 /test/
+env_config_cache.json

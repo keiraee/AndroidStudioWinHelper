@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:androidstudiowinhelper/core/log_manager.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
@@ -220,6 +222,11 @@ class DownloadManager extends ChangeNotifier {
             await partFile.rename(finalPath);
           }
 
+          // 下载完成，计算 SHA256 记入日志
+          final sha256 = await computeSha256(finalPath);
+          LogManager.instance.write('Download',
+              '下载完成: $finalPath (${File(finalPath).lengthSync()} bytes, SHA256: $sha256)');
+
           _updateTask(
             versionKey,
             _tasks[versionKey]!.copyWith(
@@ -288,6 +295,50 @@ class DownloadManager extends ChangeNotifier {
     final task = _tasks[versionKey];
     if (task == null || task.state != DownloadState.completed) return;
     await Process.start('explorer', ['/select,', task.filePath]);
+  }
+
+  // ── SHA256 校验 ──
+
+  static Future<String> computeSha256(String filePath) async {
+    final result = await Process.run(
+      'certutil',
+      ['-hashfile', filePath, 'SHA256'],
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
+    );
+    final lines = (result.stdout as String).split('\n');
+    for (final line in lines) {
+      final trimmed = line.trim();
+      if (trimmed.isNotEmpty &&
+          trimmed.length == 64 &&
+          !trimmed.contains(' ')) {
+        return trimmed.toLowerCase();
+      }
+    }
+    return '';
+  }
+
+  // ── 系统版本检查 ──
+
+  static Map<String, String> getSystemVersion() {
+    final buildNumber = Platform.operatingSystemVersion;
+    return {
+      'os': Platform.operatingSystem,
+      'version': buildNumber,
+      'build': RegExp(r'(\d{5,})').firstMatch(buildNumber)?.group(1) ?? '',
+    };
+  }
+
+  static bool isWindows10Plus() {
+    final sysInfo = getSystemVersion();
+    final build = int.tryParse(sysInfo['build'] ?? '') ?? 0;
+    return build >= 19041; // Win10 2004
+  }
+
+  static bool isWindows11() {
+    final sysInfo = getSystemVersion();
+    final build = int.tryParse(sysInfo['build'] ?? '') ?? 0;
+    return build >= 22000; // Win11
   }
 
   // ── 内部工具 ──

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:androidstudiowinhelper/core/models/android_studio_install.dart';
 import 'package:androidstudiowinhelper/core/models/data_dir_entry.dart';
+import 'package:androidstudiowinhelper/core/models/env_path_config.dart';
 import 'package:androidstudiowinhelper/core/models/studio_version.dart';
 
 class ScanCache {
@@ -26,6 +27,9 @@ class ScanCache {
 
   static File get _versionFile =>
       File('${_cacheDir.path}\\version_cache.json');
+
+  static File get _envConfigFile =>
+      File('${Directory.current.path}\\env_config_cache.json');
 
   // ── 磁盘扫描缓存 ──
 
@@ -93,6 +97,28 @@ class ScanCache {
       final json =
           versions.map((v) => v.toJson()).toList();
       file.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(json));
+    } catch (_) {
+      // 缓存写入失败不阻塞主流程
+    }
+  }
+
+  // ── 环境配置缓存（用于回退） ──
+
+  static EnvPathConfigResult? loadEnvConfig() {
+    try {
+      final file = _envConfigFile;
+      if (!file.existsSync()) return null;
+      final json = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+      return EnvPathConfigResult.fromJson(json);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static void saveEnvConfig(EnvPathConfigResult result) {
+    try {
+      final file = _envConfigFile;
+      file.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(result.toJson()));
     } catch (_) {
       // 缓存写入失败不阻塞主流程
     }

@@ -1,7 +1,10 @@
+import 'package:androidstudiowinhelper/core/log_manager.dart';
 import 'package:androidstudiowinhelper/pages/detect_page.dart';
 import 'package:flutter/material.dart';
 
 void main() {
+  LogManager.instance.init();
+  LogManager.instance.cleanupOldLogs(keepDays: 30);
   runApp(const AndroidStudioWinHelperApp());
 }
 

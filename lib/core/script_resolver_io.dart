@@ -37,6 +37,38 @@ Future<String> resolveScanDataDirsScript() {
   );
 }
 
+Future<String> resolveConfigEnvPathsScript() {
+  return resolveScript(
+    fileName: 'config-env-paths.ps1',
+    assetPath: 'scripts/config-env-paths.ps1',
+    envVar: 'ASWH_CONFIG_ENV_SCRIPT',
+  );
+}
+
+Future<String> resolveDetectHypervScript() {
+  return resolveScript(
+    fileName: 'detect-hyperv.ps1',
+    assetPath: 'scripts/detect-hyperv.ps1',
+    envVar: 'ASWH_DETECT_HYPERV_SCRIPT',
+  );
+}
+
+Future<String> resolveToggleHypervScript() {
+  return resolveScript(
+    fileName: 'toggle-hyperv.ps1',
+    assetPath: 'scripts/toggle-hyperv.ps1',
+    envVar: 'ASWH_TOGGLE_HYPERV_SCRIPT',
+  );
+}
+
+Future<String> resolveCheckEmulatorScript() {
+  return resolveScript(
+    fileName: 'check-emulator.ps1',
+    assetPath: 'scripts/check-emulator.ps1',
+    envVar: 'ASWH_CHECK_EMULATOR_SCRIPT',
+  );
+}
+
 Iterable<String> _projectCandidates(String fileName) sync* {
   final cwd = Directory.current.path;
   yield _join(cwd, 'scripts/$fileName');
