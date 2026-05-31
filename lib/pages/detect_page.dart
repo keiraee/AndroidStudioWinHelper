@@ -8,6 +8,7 @@ import 'package:androidstudiowinhelper/core/download_manager.dart';
 import 'package:androidstudiowinhelper/core/emulator_check_manager.dart';
 import 'package:androidstudiowinhelper/core/env_path_manager.dart';
 import 'package:androidstudiowinhelper/core/hyperv_manager.dart';
+import 'package:androidstudiowinhelper/core/log_manager.dart';
 import 'package:androidstudiowinhelper/core/models/android_studio_install.dart';
 import 'package:androidstudiowinhelper/core/models/emulator_check_result.dart';
 import 'package:androidstudiowinhelper/core/models/data_dir_entry.dart';
@@ -17,6 +18,7 @@ import 'package:androidstudiowinhelper/core/models/hyperv_result.dart';
 import 'package:androidstudiowinhelper/core/models/scan_progress.dart';
 import 'package:androidstudiowinhelper/core/models/studio_version.dart';
 import 'package:androidstudiowinhelper/core/scan_cache.dart';
+import 'package:androidstudiowinhelper/core/sdk_setup_manager.dart';
 import 'package:androidstudiowinhelper/core/studio_version_service.dart';
 import 'package:androidstudiowinhelper/pages/download_progress_card.dart';
 import 'package:flutter/material.dart';
@@ -29,7 +31,7 @@ Future<void> _openUrl(String url) async {
   await Process.start('cmd', ['/c', 'start', '', url]);
 }
 
-enum _PageTab { install, storage, download, envConfig, hyperV }
+enum _PageTab { install, storage, download, envConfig, hyperV, sdkSetup }
 
 class DetectPage extends StatefulWidget {
   const DetectPage({super.key});
@@ -79,6 +81,15 @@ class _DetectPageState extends State<DetectPage> {
   final _emuCheckManager = EmulatorCheckManager();
   bool _emuCheckLoading = false;
   EmulatorCheckResult? _emuCheckResult;
+
+  final _sdkSetupManager = SdkSetupManager();
+  bool _sdkSetupLoading = false;
+  int _sdkSetupPercent = 0;
+  String _sdkSetupMessage = '';
+  SdkActionResult? _sdkSetupResult;
+  SdkStatus? _sdkStatus;
+  final _sdkProxyController = TextEditingController();
+  String _sdkMirror = 'flutter';
 
   bool get _hasCache => _storageResult != null;
 
@@ -660,6 +671,17 @@ class _DetectPageState extends State<DetectPage> {
                                 if (_emuCheckResult == null) _runEmulatorCheck();
                               },
                             ),
+                            const SizedBox(height: 12),
+                            _TabTile(
+                              icon: Icons.build_outlined,
+                              title: 'SDK 一键安装',
+                              subtitle: '自动配置 Android SDK 核心组件（无需安装 Android Studio）',
+                              selected: _activeTab == _PageTab.sdkSetup,
+                              onTap: () {
+                                setState(() => _activeTab = _PageTab.sdkSetup);
+                                if (_sdkStatus == null) _detectSdkStatus();
+                              },
+                            ),
                           ],
                         ),
                       ),
@@ -676,6 +698,7 @@ class _DetectPageState extends State<DetectPage> {
               _PageTab.download => _buildDownloadTab(),
               _PageTab.envConfig => _buildEnvConfigTab(),
               _PageTab.hyperV => _buildHyperVTab(),
+              _PageTab.sdkSetup => _buildSdkSetupTab(),
             },
           ),
         ],
@@ -799,6 +822,52 @@ class _DetectPageState extends State<DetectPage> {
         for (final entry in visibleEntries)
           _StorageEntryTile(entry: entry),
       ],
+    );
+  }
+
+  Widget _buildSystemVersionBanner() {
+    final info = DownloadManager.getSystemVersion();
+    final buildStr = info['build'] ?? '';
+    final build = int.tryParse(buildStr) ?? 0;
+    final isWin11 = DownloadManager.isWindows11();
+    final sysLabel = isWin11 ? 'Windows 11' : 'Windows 10';
+
+    if (build == 0) return const SizedBox.shrink();
+
+    final isOld = !DownloadManager.isWindows10Plus();
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      color: isOld
+          ? Theme.of(context).colorScheme.errorContainer.withValues(alpha: 0.3)
+          : Theme.of(context).colorScheme.surfaceContainerLowest,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            Icon(
+              isOld ? Icons.warning_amber_outlined : Icons.info_outline,
+              size: 18,
+              color: isOld
+                  ? Theme.of(context).colorScheme.error
+                  : Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                isOld
+                    ? '$sysLabel Build $buildStr — 版本过低，新版 Android Studio (2024.3+) 需要 Win10 2004 (Build 19041) 及以上'
+                    : '$sysLabel Build $buildStr — 兼容所有版本',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: isOld
+                          ? Theme.of(context).colorScheme.error
+                          : null,
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -929,6 +998,7 @@ class _DetectPageState extends State<DetectPage> {
           if (_versionLoading && _versionProgress != null)
             _ProgressPanel(progress: _versionProgress!),
           if (_error != null) _ErrorPanel(message: _error!),
+          _buildSystemVersionBanner(),
           if (_versionWarnings != null)
             _WarningPanel(messages: _versionWarnings!),
           Expanded(
@@ -960,6 +1030,358 @@ class _DetectPageState extends State<DetectPage> {
       ),
     );
   }
+
+  // --- SDK 管理 ---
+
+  SdkPackageInfo? _sdkPackageInfo;
+  SdkActionResult? _sdkActionResult;
+  final Set<String> _selectedPackages = {};
+
+  void _detectSdkStatus() {
+    final status = SdkSetupManager.quickStatus();
+    setState(() => _sdkStatus = status);
+    _loadSdkPackages();
+  }
+
+  Future<void> _loadSdkPackages() async {
+    setState(() {
+      _sdkSetupLoading = true;
+      _sdkSetupMessage = '正在查询包列表...';
+    });
+    try {
+      final info = await _sdkSetupManager.listPackages(
+        sdkDir: _sdkStatus?.sdkDir,
+        mirror: _sdkMirror,
+        proxy: _sdkProxyController.text.trim().isEmpty
+            ? null
+            : _sdkProxyController.text.trim(),
+      );
+      setState(() {
+        _sdkPackageInfo = info;
+        _sdkStatus = SdkSetupManager.quickStatus();
+      });
+    } catch (e) {
+      setState(() => _sdkSetupMessage = '查询失败: $e');
+    } finally {
+      setState(() => _sdkSetupLoading = false);
+    }
+  }
+
+  Future<void> _runSdkAction(String action, List<String> pkgs) async {
+    if (pkgs.isEmpty) return;
+    setState(() {
+      _sdkSetupLoading = true;
+      _sdkSetupPercent = 0;
+      _sdkSetupMessage = action == 'install' ? '正在安装...' : '正在卸载...';
+      _sdkActionResult = null;
+    });
+    try {
+      final result = action == 'install'
+          ? await _sdkSetupManager.install(
+              packages: pkgs,
+              sdkDir: _sdkStatus?.sdkDir,
+              mirror: _sdkMirror,
+              proxy: _sdkProxyController.text.trim().isEmpty
+                  ? null
+                  : _sdkProxyController.text.trim(),
+              onProgress: (pct, msg) {
+                if (!mounted) return;
+                setState(() {
+                  _sdkSetupPercent = pct;
+                  _sdkSetupMessage = msg;
+                });
+              },
+            )
+          : await _sdkSetupManager.uninstall(
+              packages: pkgs,
+              sdkDir: _sdkStatus?.sdkDir,
+              onProgress: (pct, msg) {
+                if (!mounted) return;
+                setState(() {
+                  _sdkSetupPercent = pct;
+                  _sdkSetupMessage = msg;
+                });
+              },
+            );
+      setState(() {
+        _sdkActionResult = result;
+        _sdkSetupMessage = result.message;
+      });
+      // 重新加载
+      await _loadSdkPackages();
+    } catch (e) {
+      setState(() => _sdkSetupMessage = '操作失败: $e');
+    } finally {
+      setState(() => _sdkSetupLoading = false);
+    }
+  }
+
+  Widget _buildSdkSetupTab() {
+    final status = _sdkStatus;
+    final info = _sdkPackageInfo;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _SectionHeader(
+            icon: Icons.build_outlined,
+            title: 'SDK 管理',
+            trailing: status != null ? status.sdkDir : null,
+            action: _ActionButton(
+              label: '刷新',
+              icon: Icons.refresh,
+              loading: _sdkSetupLoading,
+              onPressed: _sdkSetupLoading ? null : _detectSdkStatus,
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (_sdkSetupLoading)
+            Card(
+              margin: const EdgeInsets.only(bottom: 16),
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  children: [
+                    LinearProgressIndicator(
+                      value: _sdkSetupPercent > 0 ? _sdkSetupPercent / 100 : null,
+                    ),
+                    const SizedBox(height: 12),
+                    Text('$_sdkSetupPercent% — $_sdkSetupMessage',
+                        style: Theme.of(context).textTheme.bodyMedium),
+                  ],
+                ),
+              ),
+            ),
+          if (_sdkActionResult != null)
+            Card(
+              margin: const EdgeInsets.only(bottom: 12),
+              color: _sdkActionResult!.success
+                  ? Colors.green.withValues(alpha: 0.1)
+                  : Colors.red.withValues(alpha: 0.1),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(_sdkActionResult!.message,
+                    style: TextStyle(
+                        color: _sdkActionResult!.success
+                            ? Colors.green.shade800
+                            : Colors.red.shade800)),
+              ),
+            ),
+          if (info != null) _buildSdkPackageManager(info, status),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSdkPackageManager(SdkPackageInfo info, SdkStatus? status) {
+    // 按类别分组可用包
+    final categories = <String, List<String>>{};
+    for (final pkg in info.available) {
+      final cat = pkg.split(';').first;
+      categories.putIfAbsent(cat, () => []);
+      categories[cat]!.add(pkg);
+    }
+
+    return Expanded(
+      child: ListView(
+        children: [
+          // SDK 目录 + Java
+          _buildSdkInfoCard(status),
+          const SizedBox(height: 10),
+
+          // 已安装包
+          if (info.installed.isNotEmpty) ...[
+            _buildSectionTitle('已安装 (${info.installed.length})'),
+            for (final pkg in info.installed)
+              _InstalledPackageTile(
+                package: pkg,
+                onUninstall: () => _runSdkAction('uninstall', [pkg]),
+              ),
+            const SizedBox(height: 16),
+          ],
+
+          // 可用包 - 按类别
+          _buildSectionTitle('可用包（勾选后安装）'),
+          const SizedBox(height: 8),
+
+          // 下载源 & 代理
+          _buildNetworkConfigCard(),
+          const SizedBox(height: 10),
+
+          // 常用类别快速安装
+          _buildQuickInstallCard(info),
+          const SizedBox(height: 10),
+
+          // 包分类列表
+          for (final entry in categories.entries)
+            _PackageCategoryCard(
+              category: entry.key,
+              packages: entry.value,
+              installed: info.installed,
+              selected: _selectedPackages,
+              onToggle: (pkg, sel) {
+                setState(() {
+                  if (sel) {
+                    _selectedPackages.add(pkg);
+                  } else {
+                    _selectedPackages.remove(pkg);
+                  }
+                });
+              },
+            ),
+
+          // 安装按钮
+          if (_selectedPackages.isNotEmpty && !_sdkSetupLoading)
+            Padding(
+              padding: const EdgeInsets.only(top: 16),
+              child: ElevatedButton.icon(
+                onPressed: () =>
+                    _runSdkAction('install', _selectedPackages.toList()),
+                icon: const Icon(Icons.download),
+                label: Text('安装选中 (${_selectedPackages.length})'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSdkInfoCard(SdkStatus? status) {
+    if (status == null) return const SizedBox.shrink();
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.folder_outlined, size: 20, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SelectableText(status.sdkDir,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(fontFamily: 'Consolas')),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Icon(status.hasJava ? Icons.check_circle : Icons.error_outline,
+                    size: 18, color: status.hasJava ? Colors.green : Colors.red),
+                const SizedBox(width: 8),
+                Text(status.hasJava ? 'Java: 已安装' : 'Java: 未检测到',
+                    style: Theme.of(context).textTheme.bodySmall),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionTitle(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(title, style: Theme.of(context).textTheme.titleSmall),
+    );
+  }
+
+  Widget _buildNetworkConfigCard() {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('下载源', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              value: _sdkMirror,
+              isDense: true,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'flutter', child: Text('Flutter CDN (推荐)')),
+                DropdownMenuItem(value: 'tencent', child: Text('腾讯云')),
+                DropdownMenuItem(value: 'bfsu', child: Text('北外镜像')),
+                DropdownMenuItem(value: 'official', child: Text('Google 官方')),
+              ],
+              onChanged: (v) => setState(() => _sdkMirror = v ?? 'flutter'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _sdkProxyController,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(fontFamily: 'Consolas'),
+              decoration: const InputDecoration(
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                border: OutlineInputBorder(),
+                hintText: '留空不使用代理',
+                labelText: '代理地址（可选）',
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildQuickInstallCard(SdkPackageInfo info) {
+    final quickPkgs = {
+      'platform-tools': 'ADB / Platform-Tools',
+      'emulator': 'Android Emulator',
+      'build-tools;36.0.0': 'Build Tools 36.0.0',
+      'platforms;android-36': 'Android 36 Platform',
+      'sources;android-36': 'Android 36 Sources',
+      'extras;google;Android_Emulator_Hypervisor_Driver': 'AEHD 驱动',
+    };
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('快速安装核心包', style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final entry in quickPkgs.entries)
+                  FilterChip(
+                    label: Text(entry.value),
+                    selected: _selectedPackages.contains(entry.key),
+                    onSelected: (sel) {
+                      setState(() {
+                        if (sel) {
+                          _selectedPackages.add(entry.key);
+                        } else {
+                          _selectedPackages.remove(entry.key);
+                        }
+                      });
+                    },
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- 环境配置 ---
 
   Widget _buildEnvConfigTab() {
     return Padding(
@@ -2822,9 +3244,9 @@ class _EnvPathCard extends StatelessWidget {
   }
 
   String _statusLabel() {
-    if (item.source == 'NotSet') return '未设置 [source=NotSet]';
-    if (item.exists) return '正常 [exists=true]';
-    return '路径不存在 [exists=false]';
+    if (item.source == 'NotSet') return '未配置';
+    if (item.exists) return '正常';
+    return '路径不存在';
   }
 
   IconData _varIcon() {
@@ -3087,6 +3509,82 @@ class _PathEntryTile extends StatelessWidget {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _InstalledPackageTile extends StatelessWidget {
+  final String package;
+  final VoidCallback onUninstall;
+
+  const _InstalledPackageTile({
+    required this.package,
+    required this.onUninstall,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 4),
+      child: ListTile(
+        dense: true,
+        leading: const Icon(Icons.check_circle, color: Colors.green, size: 20),
+        title: Text(package, style: const TextStyle(fontSize: 13)),
+        trailing: IconButton(
+          icon: const Icon(Icons.delete_outline, size: 20, color: Colors.red),
+          tooltip: '卸载',
+          onPressed: onUninstall,
+        ),
+      ),
+    );
+  }
+}
+
+class _PackageCategoryCard extends StatelessWidget {
+  final String category;
+  final List<String> packages;
+  final List<String> installed;
+  final Set<String> selected;
+  final void Function(String pkg, bool selected) onToggle;
+
+  const _PackageCategoryCard({
+    required this.category,
+    required this.packages,
+    required this.installed,
+    required this.selected,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ExpansionTile(
+        title: Text(category, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+        childrenPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        children: packages.map((pkg) {
+          final isInstalled = installed.contains(pkg);
+          final isSelected = selected.contains(pkg);
+          return CheckboxListTile(
+            dense: true,
+            value: isInstalled || isSelected,
+            onChanged: isInstalled
+                ? null
+                : (v) => onToggle(pkg, v ?? false),
+            title: Text(
+              pkg,
+              style: TextStyle(
+                fontSize: 12,
+                color: isInstalled ? Colors.green : null,
+                decoration: isInstalled ? TextDecoration.none : null,
+              ),
+            ),
+            secondary: isInstalled
+                ? const Icon(Icons.check_circle, color: Colors.green, size: 18)
+                : null,
+          );
+        }).toList(),
       ),
     );
   }

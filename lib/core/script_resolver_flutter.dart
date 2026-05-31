@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -23,6 +24,20 @@ Future<String> resolveScript({
 
   for (final candidate in _projectCandidates(fileName)) {
     if (File(candidate).existsSync()) {
+      // 确保 .ps1 文件有 UTF-8 BOM
+      if (fileName.endsWith('.ps1')) {
+        final bytes = File(candidate).readAsBytesSync();
+        if (bytes.length < 3 ||
+            bytes[0] != 0xEF ||
+            bytes[1] != 0xBB ||
+            bytes[2] != 0xBF) {
+          final bomFile =
+              '${Directory.systemTemp.path}/aswh_bom_$fileName';
+          File(bomFile)
+              .writeAsBytesSync([0xEF, 0xBB, 0xBF, ...bytes]);
+          return _cache[fileName] = File(bomFile).absolute.path;
+        }
+      }
       return _cache[fileName] = File(candidate).absolute.path;
     }
   }
@@ -30,7 +45,8 @@ Future<String> resolveScript({
   final content = await rootBundle.loadString(assetPath);
   final tempDir = Directory.systemTemp.createTempSync('aswh_scripts');
   final scriptFile = File('${tempDir.path}/$fileName');
-  await scriptFile.writeAsString(content);
+  // Write with UTF-8 BOM so PowerShell 5.1 can parse Chinese characters correctly
+  await scriptFile.writeAsBytes([0xEF, 0xBB, 0xBF, ...utf8.encode(content)]);
   return _cache[fileName] = scriptFile.absolute.path;
 }
 
@@ -71,6 +87,22 @@ Future<String> resolveToggleHypervScript() {
     fileName: 'toggle-hyperv.ps1',
     assetPath: 'scripts/toggle-hyperv.ps1',
     envVar: 'ASWH_TOGGLE_HYPERV_SCRIPT',
+  );
+}
+
+Future<String> resolveCheckEmulatorScript() {
+  return resolveScript(
+    fileName: 'check-emulator.ps1',
+    assetPath: 'scripts/check-emulator.ps1',
+    envVar: 'ASWH_CHECK_EMULATOR_SCRIPT',
+  );
+}
+
+Future<String> resolveSetupSdkScript() {
+  return resolveScript(
+    fileName: 'setup-sdk.ps1',
+    assetPath: 'scripts/setup-sdk.ps1',
+    envVar: 'ASWH_SETUP_SDK_SCRIPT',
   );
 }
 

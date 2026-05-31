@@ -54,26 +54,16 @@ try {
 # --- GPU Info ---
 try {
     $gpus = Get-CimInstance Win32_VideoController -ErrorAction Stop
+    $gpuLines = @()
     foreach ($gpu in $gpus) {
         if ([string]::IsNullOrWhiteSpace($gpu.Name)) { continue }
-        $driverDate = ""
-        if ($gpu.DriverDate) {
-            try { $driverDate = ([datetime]$gpu.DriverDate).ToString("yyyy-MM-dd") } catch { $driverDate = "$($gpu.DriverDate)" }
-        }
-        $ageDays = 0
-        if ($gpu.DriverDate) {
-            try { $ageDays = ((Get-Date) - ([datetime]$gpu.DriverDate)).Days } catch {}
-        }
-        $status = "ok"
-        $suggestion = ""
-        if ($ageDays -gt 365) {
-            $status = "warning"
-            $suggestion = "显卡驱动已超过 $ageDays 天未更新，建议更新至最新版本以获得最佳 GPU 加速效果"
-        }
-        Add-Check -Name "gpu_driver" -Category "硬件环境" -Label "GPU 驱动 ($($gpu.Name))" -Status $status -Detail "版本: $($gpu.DriverVersion) | 日期: $driverDate" -Suggestion $suggestion
+        $gpuLines += "$($gpu.Name) ($($gpu.DriverVersion))"
+    }
+    if ($gpuLines.Count -gt 0) {
+        Add-Check -Name "gpu_driver" -Category "硬件环境" -Label "GPU 驱动" -Status "ok" -Detail ($gpuLines -join " | ")
     }
 } catch {
-    Add-Check -Name "gpu_driver" -Category "硬件环境" -Label "GPU 驱动" -Status "error" -Detail "检测失败: $_"
+    Add-Check -Name "gpu_driver" -Category "硬件环境" -Label "GPU 驱动" -Status "unknown" -Detail "检测失败: $_"
 }
 
 # --- Disk Type ---

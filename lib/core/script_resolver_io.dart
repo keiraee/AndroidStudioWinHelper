@@ -61,6 +61,14 @@ Future<String> resolveToggleHypervScript() {
   );
 }
 
+Future<String> resolveCheckEmulatorScript() {
+  return resolveScript(
+    fileName: 'check-emulator.ps1',
+    assetPath: 'scripts/check-emulator.ps1',
+    envVar: 'ASWH_CHECK_EMULATOR_SCRIPT',
+  );
+}
+
 Iterable<String> _projectCandidates(String fileName) sync* {
   final cwd = Directory.current.path;
   yield _join(cwd, 'scripts/$fileName');

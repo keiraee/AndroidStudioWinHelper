@@ -303,6 +303,28 @@ foreach ($name in $allVarNames) {
     }
 }
 
+# 补全：核心变量即使未设置也要展示（方便用户主动配置）
+foreach ($coreName in $coreVarDefs.Keys) {
+    $alreadyAdded = $false
+    foreach ($mv in $matchedVars) {
+        if ($mv.variable -eq $coreName) { $alreadyAdded = $true; break }
+    }
+    if (-not $alreadyAdded) {
+        $coreDef = $coreVarDefs[$coreName]
+        $matchedVars += [PSCustomObject]@{
+            variable = $coreName
+            label = $coreDef.label
+            currentValue = ""
+            source = "NotSet"
+            exists = $false
+            sizeBytes = 0
+            sizeHuman = ""
+            suggestedDefault = $coreDef.default
+            isCore = $true
+        }
+    }
+}
+
 # 核心变量排前面，再按变量名排序
 $items = @($matchedVars | Sort-Object -Property @{Expression = { -not $_.isCore }}, @{Expression = { $_.variable }})
 

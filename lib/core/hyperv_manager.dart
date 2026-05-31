@@ -2,8 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-// ignore_for_file: avoid_print
-
+import 'package:androidstudiowinhelper/core/log_manager.dart';
 import 'package:androidstudiowinhelper/core/models/hyperv_result.dart';
 import 'package:androidstudiowinhelper/core/models/scan_progress.dart';
 import 'package:androidstudiowinhelper/core/script_locator.dart';
@@ -12,8 +11,7 @@ typedef HypervProgressCallback = void Function(ScanProgress progress);
 
 class HypervManager {
   static void _log(String message) {
-    final ts = DateTime.now().toIso8601String().substring(11, 23);
-    print('[HyperV $ts] $message');
+    LogManager.instance.write('HyperV', message);
   }
 
   // ===================== DETECT =====================

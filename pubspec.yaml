@@ -66,6 +66,9 @@ flutter:
     - scripts/detect-android-studio.ps1
     - scripts/scan-data-dirs.ps1
     - scripts/config-env-paths.ps1
+    - scripts/detect-hyperv.ps1
+    - scripts/toggle-hyperv.ps1
+    - scripts/check-emulator.ps1
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

@@ -2,8 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-// ignore_for_file: avoid_print
-
+import 'package:androidstudiowinhelper/core/log_manager.dart';
 import 'package:androidstudiowinhelper/core/models/env_path_config.dart';
 import 'package:androidstudiowinhelper/core/models/scan_progress.dart';
 import 'package:androidstudiowinhelper/core/scan_cache.dart';
@@ -333,10 +332,11 @@ class EnvPathManager {
     required String stdoutText,
     required String stderrText,
   }) {
+    final _log = (String msg) => LogManager.instance.write('EnvPath', msg);
     // Debug: 打印原始输出
-    print('[EnvPathManager] stdout (前1000字符): ${stdoutText.length > 1000 ? stdoutText.substring(0, 1000) : stdoutText}');
+    _log('stdout (前1000字符): ${stdoutText.length > 1000 ? stdoutText.substring(0, 1000) : stdoutText}');
     if (stderrText.isNotEmpty) {
-      print('[EnvPathManager] stderr: $stderrText');
+      _log('stderr: $stderrText');
     }
 
     final marker = '@@RESULT|';
@@ -363,7 +363,7 @@ class EnvPathManager {
     }
 
     if (jsonText.isEmpty) {
-      print('[EnvPathManager] JSON 为空，返回空结果');
+      _log('JSON 为空，返回空结果');
       return const EnvPathConfigResult(items: [], pathEntries: []);
     }
 
@@ -374,14 +374,14 @@ class EnvPathManager {
       }
       final result = EnvPathConfigResult.fromJson(decoded);
       // Debug: 打印每个 item 的状态
-      print('[EnvPathManager] 解析成功: ${result.items.length} 个变量, ${result.pathEntries.length} 个 PATH 条目');
+      _log('解析成功: ${result.items.length} 个变量, ${result.pathEntries.length} 个 PATH 条目');
       for (final item in result.items) {
-        print('[EnvPathManager]   ${item.variable}: source=${item.source}, exists=${item.exists}, val=${item.currentValue}');
+        _log('  ${item.variable}: source=${item.source}, exists=${item.exists}, val=${item.currentValue}');
       }
       return result;
     } on FormatException catch (error) {
-      print('[EnvPathManager] JSON 解析失败: $error');
-      print('[EnvPathManager] jsonText: ${jsonText.length > 500 ? jsonText.substring(0, 500) : jsonText}');
+      _log('JSON 解析失败: $error');
+      _log('jsonText: ${jsonText.length > 500 ? jsonText.substring(0, 500) : jsonText}');
       throw StateError('检测结果 JSON 解析失败：$error');
     }
   }
