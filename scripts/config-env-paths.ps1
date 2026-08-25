@@ -6,7 +6,9 @@
     [string]$VarValue,
     [switch]$CreateDir,
     [string]$AppendPath,
-    [string]$ResultFile
+    [string]$ResultFile,
+    [string]$Scope = "Machine",
+    [switch]$Unset
 )
 
 $utf8 = [System.Text.UTF8Encoding]::new($false)
@@ -131,20 +133,30 @@ if ($Write) {
                 $result.value = $AppendPath
             }
         } else {
-            # 写入单个变量模式
+            # 写入/删除单个变量模式
             if ([string]::IsNullOrWhiteSpace($VarName)) {
                 throw "未指定变量名"
             }
 
-            if ($CreateDir -and -not [string]::IsNullOrWhiteSpace($VarValue) -and -not (Test-Path -LiteralPath $VarValue)) {
-                New-Item -ItemType Directory -Force -Path $VarValue | Out-Null
-            }
+            $targetScope = if ($Scope -eq "User") { "User" } else { "Machine" }
 
-            [Environment]::SetEnvironmentVariable($VarName, $VarValue, "Machine")
-            Broadcast-SettingChange
-            $result.success = $true
-            $result.variable = $VarName
-            $result.value = $VarValue
+            if ($Unset -or [string]::IsNullOrWhiteSpace($VarValue)) {
+                [Environment]::SetEnvironmentVariable($VarName, $null, $targetScope)
+                Broadcast-SettingChange
+                $result.success = $true
+                $result.variable = $VarName
+                $result.value = ""
+            } else {
+                if ($CreateDir -and -not (Test-Path -LiteralPath $VarValue)) {
+                    New-Item -ItemType Directory -Force -Path $VarValue | Out-Null
+                }
+
+                [Environment]::SetEnvironmentVariable($VarName, $VarValue, $targetScope)
+                Broadcast-SettingChange
+                $result.success = $true
+                $result.variable = $VarName
+                $result.value = $VarValue
+            }
         }
     } catch {
         $result.error = $_.Exception.Message

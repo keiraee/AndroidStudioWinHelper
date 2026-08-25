@@ -47,9 +47,16 @@ class EnvPathManager {
     required String variable,
     required String value,
     bool createDir = false,
+    String scope = 'Machine',
+    bool unset = false,
   }) async {
     return _elevatedWrite(
-      scriptArgs: ['-Write', '-VarName', variable, '-VarValue', value],
+      scriptArgs: [
+        '-Write',
+        '-VarName', variable,
+        '-Scope', scope,
+        if (unset) '-Unset' else ...['-VarValue', value],
+      ],
       createDir: createDir,
     );
   }
@@ -89,14 +96,36 @@ class EnvPathManager {
     final results = <EnvPathWriteResult>[];
     for (final item in backup.items) {
       if (item.variable == 'GRADLE_USER_HOME') continue;
-      if (item.source == 'NotSet' || item.currentValue.isEmpty) continue;
 
       try {
-        final result = await writeVariable(
+        // 备份时未设置：删除 ASWH 写入的 Machine 变量
+        if (item.source == 'NotSet' || item.currentValue.isEmpty) {
+          results.add(await writeVariable(
+            variable: item.variable,
+            value: '',
+            unset: true,
+            scope: 'Machine',
+          ));
+          continue;
+        }
+
+        final scope = item.source == 'User' ? 'User' : 'Machine';
+
+        // 原为 User：清掉可能被写成 Machine 的覆盖值，再恢复 User
+        if (scope == 'User') {
+          results.add(await writeVariable(
+            variable: item.variable,
+            value: '',
+            unset: true,
+            scope: 'Machine',
+          ));
+        }
+
+        results.add(await writeVariable(
           variable: item.variable,
           value: item.currentValue,
-        );
-        results.add(result);
+          scope: scope,
+        ));
       } catch (error) {
         results.add(EnvPathWriteResult(
           success: false,
