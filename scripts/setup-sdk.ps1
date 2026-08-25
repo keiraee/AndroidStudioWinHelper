@@ -4,7 +4,7 @@
     [string]$Proxy = "",
     [string]$Mirror = "flutter",
     [string]$Action = "",          # install, uninstall, list, accept-licenses
-    [string]$Packages = "",        # 分号分隔的包列表
+    [string]$Packages = "",        # 竖线分隔的包列表（包 ID 本身可含分号）
     [switch]$Json
 )
 
@@ -255,7 +255,7 @@ if ($Action -eq "install") {
         exit 1
     }
 
-    $pkgList = $Packages -split ";"
+    $pkgList = $Packages -split "\|" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
     $installLog = @()
 
     # 先接受所有 license
@@ -272,8 +272,7 @@ if ($Action -eq "install") {
 
     # 逐个安装
     for ($i = 0; $i -lt $pkgList.Count; $i++) {
-        $pkg = $pkgList[$i].Trim()
-        if (-not $pkg) { continue }
+        $pkg = $pkgList[$i]
         $pct = 50 + [math]::Floor(40 * ($i + 1) / ($pkgList.Count + 1))
         Write-Progress2 -Percent $pct -Message "正在安装: $pkg"
         Write-Log "安装: $pkg"
@@ -319,12 +318,11 @@ if ($Action -eq "uninstall") {
         exit 1
     }
 
-    $pkgList = $Packages -split ";"
+    $pkgList = $Packages -split "\|" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
     $uninstallLog = @()
 
     for ($i = 0; $i -lt $pkgList.Count; $i++) {
-        $pkg = $pkgList[$i].Trim()
-        if (-not $pkg) { continue }
+        $pkg = $pkgList[$i]
         Write-Progress2 -Percent (30 + [math]::Floor(60 * ($i + 1) / $pkgList.Count)) -Message "正在卸载: $pkg"
         Write-Log "卸载: $pkg"
 

@@ -115,7 +115,8 @@ class SdkSetupManager {
     String mirror = 'flutter',
     SdkProgressCallback? onProgress,
   }) async {
-    _log('===== SDK $action: ${packages.join(";")} =====');
+    // 包 ID 本身含 ';'（如 platforms;android-36），列表分隔用 '|' 避免拆坏
+    _log('===== SDK $action: ${packages.join("|")} =====');
 
     final scriptPath = await resolveSetupSdkScript();
     final sdkDirArg = sdkDir ?? _detectSdkDir();
@@ -127,7 +128,7 @@ class SdkSetupManager {
       '-ResultFile', resultFile,
       '-Mirror', mirror,
       '-Action', action,
-      if (packages.isNotEmpty) ...['-Packages', packages.join(';')],
+      if (packages.isNotEmpty) ...['-Packages', packages.join('|')],
       if (proxy != null && proxy.isNotEmpty) ...['-Proxy', proxy],
       '-Json',
     ];
