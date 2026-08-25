@@ -35,7 +35,11 @@ class JdkCheck implements DiagnosticCheck {
       issues.add(DiagnosticIssue(
         message: 'JAVA_HOME 环境变量未设置',
         severity: IssueSeverity.error,
-        fix: FixAction(label: '在环境配置中设置', risk: FixRisk.risky, execute: () async {}),
+        fix: FixAction(
+          label: '在环境配置中设置',
+          risk: FixRisk.safe,
+          navigateTabId: relatedTabId,
+        ),
       ));
       return DiagnosticResult.withIssues(checkId: checkId, title: title, issues: issues, relatedTabId: relatedTabId);
     }
@@ -47,7 +51,11 @@ class JdkCheck implements DiagnosticCheck {
         fix: detectedJdk != null
             ? FixAction(label: '修正为 $detectedJdk', risk: FixRisk.risky,
                 execute: () async { await _envManager.writeVariable(variable: 'JAVA_HOME', value: detectedJdk); })
-            : FixAction(label: '前往环境配置设置', risk: FixRisk.safe, execute: () async {}),
+            : FixAction(
+                label: '前往环境配置设置',
+                risk: FixRisk.safe,
+                navigateTabId: relatedTabId,
+              ),
       ));
       return DiagnosticResult.withIssues(checkId: checkId, title: title, issues: issues, relatedTabId: relatedTabId);
     }

@@ -176,6 +176,11 @@ class _DiagnosticsTabState extends State<DiagnosticsTab> {
   }
 
   Future<void> _executeFix(FixAction fix) async {
+    if (fix.navigateTabId != null) {
+      _navigateToTab(fix.navigateTabId);
+      return;
+    }
+
     if (fix.risk == FixRisk.risky) {
       final confirmed = await showDialog<bool>(
         context: context,
@@ -198,7 +203,7 @@ class _DiagnosticsTabState extends State<DiagnosticsTab> {
     }
 
     try {
-      await fix.execute();
+      await fix.execute!();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

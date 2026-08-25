@@ -19,13 +19,17 @@ class DiagnosticIssue {
 class FixAction {
   final String label;
   final FixRisk risk;
-  final Future<void> Function() execute;
+  final Future<void> Function()? execute;
+  /// 若设置，点击修复时跳转到对应 Tab，而不是执行副作用
+  final String? navigateTabId;
 
   const FixAction({
     required this.label,
     required this.risk,
-    required this.execute,
-  });
+    this.execute,
+    this.navigateTabId,
+  }) : assert(execute != null || navigateTabId != null,
+            'FixAction 需要 execute 或 navigateTabId');
 }
 
 class DiagnosticResult {
