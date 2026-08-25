@@ -2,12 +2,17 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:androidstudiowinhelper/core/log_manager.dart';
-import 'package:androidstudiowinhelper/core/script_locator.dart';
+import 'package:androidstudiowinhelper/core/powershell_runner.dart';
 import 'package:androidstudiowinhelper/core/script_resolver_flutter.dart';
 
 typedef SdkProgressCallback = void Function(int percent, String message);
 
 class SdkSetupManager {
+  SdkSetupManager({PowerShellRunner? runner})
+      : _runner = runner ?? PowerShellRunner(logTag: 'SdkSetup');
+
+  final PowerShellRunner _runner;
+
   static void _log(String msg) {
     LogManager.instance.write('SdkSetup', msg);
   }
@@ -22,31 +27,33 @@ class SdkSetupManager {
 
     final scriptPath = await resolveSetupSdkScript();
     final sdkDirArg = sdkDir ?? _detectSdkDir();
-    final resultFile =
-        '${Directory.systemTemp.path}\\aswh_sdk_list_${DateTime.now().millisecondsSinceEpoch}.json';
 
     final args = [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass',
-      '-File', scriptPath,
       '-SdkDir', sdkDirArg,
-      '-ResultFile', resultFile,
       '-Mirror', mirror,
       '-Action', 'list-installed',
       if (proxy != null && proxy.isNotEmpty) ...['-Proxy', proxy],
       '-Json',
     ];
 
-    final result = await Process.run('powershell.exe', args,
-        stdoutEncoding: utf8, stderrEncoding: utf8);
+    final result = await _runner.run(
+      scriptPath: scriptPath,
+      extraArgs: args,
+    );
 
-    if (!File(resultFile).existsSync()) {
-      throw StateError('查询失败: ${result.stderr}');
+    if (result.jsonResult != null) {
+      return SdkPackageInfo.fromJson(result.jsonResult!);
     }
 
-    final json = jsonDecode(File(resultFile).readAsStringSync()) as Map<String, dynamic>;
-    File(resultFile).deleteSync();
+    // 回退：检查结果文件
+    final resultFile = _findResultFile(result.stdout);
+    if (resultFile != null && File(resultFile).existsSync()) {
+      final json = jsonDecode(File(resultFile).readAsStringSync()) as Map<String, dynamic>;
+      try { File(resultFile).deleteSync(); } catch (_) {}
+      return SdkPackageInfo.fromJson(json);
+    }
 
-    return SdkPackageInfo.fromJson(json);
+    throw StateError('查询失败: ${result.stderr}');
   }
 
   /// 安装指定包
@@ -116,8 +123,6 @@ class SdkSetupManager {
         '${Directory.systemTemp.path}\\aswh_sdk_${action}_${DateTime.now().millisecondsSinceEpoch}.json';
 
     final args = [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass',
-      '-File', scriptPath,
       '-SdkDir', sdkDirArg,
       '-ResultFile', resultFile,
       '-Mirror', mirror,
@@ -127,46 +132,40 @@ class SdkSetupManager {
       '-Json',
     ];
 
-    final process = await Process.start('powershell.exe', args);
-    final stdoutBytes = <int>[];
-    final stderrBuffer = StringBuffer();
+    final result = await _runner.run(
+      scriptPath: scriptPath,
+      extraArgs: args,
+      onProgress: onProgress != null
+          ? (progress) => onProgress(progress.percent, progress.message)
+          : null,
+    );
 
-    process.stdout.listen((chunk) {
-      stdoutBytes.addAll(chunk);
-      _drainLines(stdoutBytes, (line) {
-        if (line.startsWith('@@PROGRESS|') && line.endsWith('@@')) {
-          final body = line.substring('@@PROGRESS|'.length, line.length - 2);
-          final parts = body.split('|');
-          if (parts.length >= 2) {
-            final pct = int.tryParse(parts[0]) ?? 0;
-            final msg = parts[1];
-            _log('[$pct%] $msg');
-            onProgress?.call(pct.clamp(0, 100), msg);
-          }
-        }
-      });
-    });
-
-    process.stderr.listen((chunk) {
-      stderrBuffer.write(_decodeBytes(chunk));
-    });
-
-    final exitCode = await process.exitCode;
-
-    if (stdoutBytes.isNotEmpty) {
-      _log('stdout 尾部: ${_decodeBytes(stdoutBytes)}');
+    if (result.stdout.isNotEmpty) {
+      _log('stdout 尾部: ${result.stdout.length > 500 ? result.stdout.substring(result.stdout.length - 500) : result.stdout}');
     }
 
-    if (!File(resultFile).existsSync()) {
-      if (exitCode != 0) {
-        throw StateError('$action 失败 (exitCode: $exitCode): ${stderrBuffer}');
-      }
-      return SdkActionResult(success: true, message: '$action 完成', log: '');
+    // 检查结果文件
+    if (File(resultFile).existsSync()) {
+      final json = jsonDecode(File(resultFile).readAsStringSync()) as Map<String, dynamic>;
+      try { File(resultFile).deleteSync(); } catch (_) {}
+      return SdkActionResult.fromJson(json);
     }
 
-    final json = jsonDecode(File(resultFile).readAsStringSync()) as Map<String, dynamic>;
-    File(resultFile).deleteSync();
-    return SdkActionResult.fromJson(json);
+    if (result.jsonResult != null) {
+      return SdkActionResult.fromJson(result.jsonResult!);
+    }
+
+    if (!result.success) {
+      throw StateError('$action 失败 (exitCode: ${result.exitCode}): ${result.stderr}');
+    }
+
+    return SdkActionResult(success: true, message: '$action 完成', log: '');
+  }
+
+  /// 从 stdout 中提取结果文件路径
+  String? _findResultFile(String stdout) {
+    final match = RegExp(r'ResultFile:\s*(.+)').firstMatch(stdout);
+    return match?.group(1)?.trim();
   }
 
   /// 自动检测 SDK 路径
@@ -233,25 +232,39 @@ class SdkSetupManager {
     }
     return false;
   }
+}
 
-  void _drainLines(List<int> buffer, void Function(String line) onLine) {
-    while (true) {
-      var idx = buffer.indexOf(10);
-      if (idx == -1) return;
-      var lineBytes = buffer.sublist(0, idx);
-      buffer.removeRange(0, idx + 1);
-      if (lineBytes.isNotEmpty && lineBytes.last == 13) {
-        lineBytes = lineBytes.sublist(0, lineBytes.length - 1);
-      }
-      final line = _decodeBytes(lineBytes).trim();
-      if (line.isNotEmpty) onLine(line);
-    }
+class InstalledPackage {
+  final String path;
+  final String version;
+  final String description;
+  final String location;
+
+  const InstalledPackage({
+    required this.path,
+    required this.version,
+    required this.description,
+    this.location = '',
+  });
+
+  factory InstalledPackage.fromJson(Map<String, dynamic> json) {
+    return InstalledPackage(
+      path: json['path'] ?? '',
+      version: json['version'] ?? '',
+      description: json['description'] ?? '',
+      location: json['location'] ?? '',
+    );
   }
 
-  String _decodeBytes(List<int> bytes) {
-    if (bytes.isEmpty) return '';
-    try { return utf8.decode(bytes); }
-    on FormatException { return utf8.decode(bytes, allowMalformed: true); }
+  /// 兼容旧格式（纯字符串）
+  factory InstalledPackage.fromString(String s) {
+    return InstalledPackage(path: s, version: '', description: '', location: '');
+  }
+
+  /// 显示名称：优先用 description，其次用 path
+  String get displayTitle {
+    if (description.isNotEmpty) return description;
+    return path;
   }
 }
 
@@ -259,7 +272,7 @@ class SdkPackageInfo {
   final bool success;
   final String sdkDir;
   final bool hasJava;
-  final List<String> installed;
+  final List<InstalledPackage> installed;
   final List<String> available;
 
   SdkPackageInfo({
@@ -271,11 +284,19 @@ class SdkPackageInfo {
   });
 
   factory SdkPackageInfo.fromJson(Map<String, dynamic> json) {
+    final installedRaw = json['installed'] as List? ?? [];
+    final installed = installedRaw.map((e) {
+      if (e is Map<String, dynamic>) {
+        return InstalledPackage.fromJson(e);
+      }
+      return InstalledPackage.fromString('$e');
+    }).toList();
+
     return SdkPackageInfo(
       success: json['success'] == true,
       sdkDir: json['sdkDir'] ?? '',
       hasJava: json['hasJava'] == true,
-      installed: (json['installed'] as List?)?.map((e) => '$e').toList() ?? [],
+      installed: installed,
       available: (json['available'] as List?)?.map((e) => '$e').toList() ?? [],
     );
   }

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:androidstudiowinhelper/core/diagnostics/diagnostic_result.dart';
 import 'package:androidstudiowinhelper/core/models/android_studio_install.dart';
 import 'package:androidstudiowinhelper/core/models/data_dir_entry.dart';
 import 'package:androidstudiowinhelper/core/models/env_path_config.dart';
@@ -121,6 +122,38 @@ class ScanCache {
       file.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(result.toJson()));
     } catch (_) {
       // 缓存写入失败不阻塞主流程
+    }
+  }
+
+  // ── 诊断缓存 ──
+
+  static File get _diagFile => File('${_cacheDir.path}\\diag_cache.json');
+
+  static Future<void> saveDiagnosticsStatus(
+      Map<String, DiagnosticStatus> statuses) async {
+    try {
+      final file = _diagFile;
+      final json = statuses.map((k, v) => MapEntry(k, v.name));
+      file.writeAsStringSync(
+          const JsonEncoder.withIndent('  ').convert(json));
+    } catch (_) {}
+  }
+
+  static Map<String, DiagnosticStatus>? loadDiagnosticsStatus() {
+    try {
+      final file = _diagFile;
+      if (!file.existsSync()) return null;
+      final json =
+          jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+      return json.map((k, v) => MapEntry(
+            k,
+            DiagnosticStatus.values.firstWhere(
+              (s) => s.name == v,
+              orElse: () => DiagnosticStatus.ok,
+            ),
+          ));
+    } catch (_) {
+      return null;
     }
   }
 }

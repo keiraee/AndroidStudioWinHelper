@@ -69,6 +69,7 @@ flutter:
     - scripts/detect-hyperv.ps1
     - scripts/toggle-hyperv.ps1
     - scripts/check-emulator.ps1
+    - scripts/setup-sdk.ps1
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

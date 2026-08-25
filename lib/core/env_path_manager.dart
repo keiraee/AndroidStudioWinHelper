@@ -5,12 +5,18 @@ import 'dart:io';
 import 'package:androidstudiowinhelper/core/log_manager.dart';
 import 'package:androidstudiowinhelper/core/models/env_path_config.dart';
 import 'package:androidstudiowinhelper/core/models/scan_progress.dart';
+import 'package:androidstudiowinhelper/core/powershell_runner.dart';
 import 'package:androidstudiowinhelper/core/scan_cache.dart';
 import 'package:androidstudiowinhelper/core/script_locator.dart';
 
 typedef EnvProgressCallback = void Function(ScanProgress progress);
 
 class EnvPathManager {
+  EnvPathManager({PowerShellRunner? runner})
+      : _runner = runner ?? PowerShellRunner(logTag: 'EnvPath');
+
+  final PowerShellRunner _runner;
+
   Future<EnvPathConfigResult> readConfig({
     EnvProgressCallback? onProgress,
   }) async {
@@ -24,11 +30,17 @@ class EnvPathManager {
       throw StateError('未找到检测脚本：$scriptPath');
     }
 
-    if (onProgress == null) {
-      return _readWithoutProgress(scriptFile);
+    final result = await _runner.run(
+      scriptPath: scriptFile.absolute.path,
+      extraArgs: ['-Json'],
+      onProgress: onProgress,
+    );
+
+    if (!result.success && result.stdout.isEmpty) {
+      throw StateError('PowerShell 执行失败：${result.stderr}');
     }
 
-    return _readWithProgress(scriptFile, onProgress);
+    return _parseOutput(result);
   }
 
   Future<EnvPathWriteResult> writeVariable({
@@ -76,7 +88,6 @@ class EnvPathManager {
 
     final results = <EnvPathWriteResult>[];
     for (final item in backup.items) {
-      // 跳过默认路径展示项和未设置的变量
       if (item.variable == 'GRADLE_USER_HOME') continue;
       if (item.source == 'NotSet' || item.currentValue.isEmpty) continue;
 
@@ -99,7 +110,11 @@ class EnvPathManager {
     return results;
   }
 
-  // --- Private: elevated write with result file ---
+  // ── 提权写入 ──
+
+  // 串行锁：确保同一时间只有一个提权写入在执行
+  // 避免多个 UAC 弹窗和轮询计时器交错
+  static Future<void>? _writeLock;
 
   Future<EnvPathWriteResult> _elevatedWrite({
     required List<String> scriptArgs,
@@ -109,6 +124,25 @@ class EnvPathManager {
       throw UnsupportedError('环境变量写入仅支持 Windows。');
     }
 
+    // 等待前一个写入完成（串行执行）
+    while (_writeLock != null) {
+      await _writeLock;
+    }
+    final completer = Completer<void>();
+    _writeLock = completer.future;
+
+    try {
+      return await _doElevatedWrite(scriptArgs: scriptArgs, createDir: createDir);
+    } finally {
+      completer.complete();
+      _writeLock = null;
+    }
+  }
+
+  Future<EnvPathWriteResult> _doElevatedWrite({
+    required List<String> scriptArgs,
+    bool createDir = false,
+  }) async {
     final scriptPath = await resolveConfigEnvPathsScript();
     final scriptFile = File(scriptPath);
     if (!scriptFile.existsSync()) {
@@ -118,52 +152,25 @@ class EnvPathManager {
     final resultFile = '${Directory.systemTemp.path}\\aswh_env_result_${DateTime.now().millisecondsSinceEpoch}.json';
 
     final args = [
-      '-NoProfile',
-      '-ExecutionPolicy', 'Bypass',
-      '-File', scriptFile.absolute.path,
       ...scriptArgs,
       if (createDir) '-CreateDir',
       '-ResultFile', resultFile,
       '-Json',
     ];
 
-    // Use Start-Process -Verb RunAs for UAC elevation
-    final psCommand = 'Start-Process powershell -Verb RunAs -ArgumentList '
-        "'${args.join("', '")}' -Wait";
+    final result = await _runner.runElevated(
+      scriptPath: scriptFile.absolute.path,
+      extraArgs: args,
+    );
 
-    try {
-      final result = await Process.run(
-        'powershell.exe',
-        ['-NoProfile', '-Command', psCommand],
-        stdoutEncoding: utf8,
-        stderrEncoding: utf8,
-      );
-
-      if (result.exitCode != 0) {
-        // UAC denial or other error
-        final stderr = _decodeText(result.stderr);
-        if (stderr.contains('cancelled') || stderr.contains('取消')) {
-          throw StateError('用户取消了管理员权限请求。');
-        }
-        throw StateError('提权执行失败（exitCode: ${result.exitCode}）：$stderr');
-      }
-    } on ProcessException catch (e) {
-      if (e.message.contains('740')) {
-        throw StateError('需要管理员权限，请在 UAC 弹窗中点击"是"。');
-      }
-      rethrow;
-    }
-
-    // Read the result file
+    // 读取结果文件
     final resultFileObj = File(resultFile);
-    var waitMs = 0;
-    while (!resultFileObj.existsSync() && waitMs < 30000) {
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-      waitMs += 200;
-    }
-
     if (!resultFileObj.existsSync()) {
-      throw StateError('写入超时：未收到结果文件（可能是 UAC 被拒绝）。');
+      // 如果 runElevated 没有抛异常但结果文件不存在，用 result 的 jsonResult
+      if (result.jsonResult != null) {
+        return EnvPathWriteResult.fromJson(result.jsonResult!);
+      }
+      throw StateError('写入失败：未收到结果文件。');
     }
 
     try {
@@ -173,173 +180,27 @@ class EnvPathManager {
       }
       throw StateError('结果文件格式无效。');
     } finally {
-      // Clean up temp file
-      try {
-        resultFileObj.deleteSync();
-      } catch (_) {}
+      try { resultFileObj.deleteSync(); } catch (_) {}
     }
   }
 
-  // --- Private: read without progress ---
+  // ── 结果解析 ──
 
-  Future<EnvPathConfigResult> _readWithoutProgress(File scriptFile) async {
-    final result = await Process.run(
-      'powershell.exe',
-      _powershellArgs(scriptFile, withProgress: false),
-      stdoutEncoding: utf8,
-      stderrEncoding: utf8,
-    );
-
-    return _parseOutput(
-      stdoutText: _decodeText(result.stdout),
-      stderrText: _decodeText(result.stderr),
-    );
-  }
-
-  // --- Private: read with progress ---
-
-  Future<EnvPathConfigResult> _readWithProgress(
-    File scriptFile,
-    EnvProgressCallback onProgress,
-  ) async {
-    final process = await Process.start(
-      'powershell.exe',
-      _powershellArgs(scriptFile, withProgress: true),
-    );
-
-    final stdoutBuffer = StringBuffer();
-    final stderrBuffer = StringBuffer();
-    final stdoutBytes = <int>[];
-
-    final stdoutDone = process.stdout.listen(
-      (chunk) {
-        stdoutBytes.addAll(chunk);
-        _drainLines(stdoutBytes, (line) {
-          stdoutBuffer.writeln(line);
-          final progress = _parseProgressLine(line);
-          if (progress != null) {
-            onProgress(progress);
-          }
-        });
-      },
-      onError: (Object error, StackTrace _) {
-        stderrBuffer.writeln('stdout 读取失败：$error');
-      },
-    );
-
-    final stderrDone = process.stderr.listen(
-      (chunk) {
-        stderrBuffer.write(_decodeBytes(chunk));
-      },
-      onError: (Object error, StackTrace _) {
-        stderrBuffer.writeln('stderr 读取失败：$error');
-      },
-    );
-
-    final exitCode = await process.exitCode;
-    await stdoutDone.cancel();
-    await stderrDone.cancel();
-
-    if (stdoutBytes.isNotEmpty) {
-      final remaining = _decodeBytes(stdoutBytes);
-      if (remaining.trim().isNotEmpty) {
-        stdoutBuffer.writeln(remaining);
-        for (final line in remaining.split('\n')) {
-          final progress = _parseProgressLine(line.trim());
-          if (progress != null) {
-            onProgress(progress);
-          }
-        }
-      }
-    }
-
-    if (exitCode != 0 && stdoutBuffer.isEmpty) {
-      throw StateError('PowerShell 执行失败：${stderrBuffer.toString()}');
-    }
-
-    return _parseOutput(
-      stdoutText: stdoutBuffer.toString(),
-      stderrText: stderrBuffer.toString(),
-    );
-  }
-
-  // --- Helpers ---
-
-  List<String> _powershellArgs(File scriptFile, {required bool withProgress}) {
-    return [
-      '-NoProfile',
-      '-ExecutionPolicy', 'Bypass',
-      '-File', scriptFile.absolute.path,
-      '-Json',
-      if (withProgress) '-Progress',
-    ];
-  }
-
-  void _drainLines(List<int> buffer, void Function(String line) onLine) {
-    while (true) {
-      var newlineIndex = buffer.indexOf(10);
-      if (newlineIndex == -1) return;
-
-      var lineBytes = buffer.sublist(0, newlineIndex);
-      buffer.removeRange(0, newlineIndex + 1);
-
-      if (lineBytes.isNotEmpty && lineBytes.last == 13) {
-        lineBytes = lineBytes.sublist(0, lineBytes.length - 1);
-      }
-
-      final line = _decodeBytes(lineBytes).trim();
-      if (line.isNotEmpty) {
-        onLine(line);
-      }
-    }
-  }
-
-  String _decodeText(Object? data) {
-    if (data == null) return '';
-    if (data is String) return data;
-    if (data is List<int>) return _decodeBytes(data);
-    return data.toString();
-  }
-
-  String _decodeBytes(List<int> bytes) {
-    if (bytes.isEmpty) return '';
-    try {
-      return utf8.decode(bytes);
-    } on FormatException {
-      return utf8.decode(bytes, allowMalformed: true);
-    }
-  }
-
-  ScanProgress? _parseProgressLine(String line) {
-    if (!line.startsWith('@@PROGRESS|') || !line.endsWith('@@')) return null;
-
-    final body = line.substring('@@PROGRESS|'.length, line.length - 2);
-    final parts = body.split('|');
-    if (parts.length < 2) return null;
-
-    final percent = int.tryParse(parts[0]) ?? 0;
-    final message = parts[1];
-    final path = parts.length > 2 ? parts.sublist(2).join('|') : '';
-
-    return ScanProgress(
-      percent: percent.clamp(0, 100),
-      message: message,
-      path: path,
-    );
-  }
-
-  EnvPathConfigResult _parseOutput({
-    required String stdoutText,
-    required String stderrText,
-  }) {
+  EnvPathConfigResult _parseOutput(PowerShellResult result) {
     final _log = (String msg) => LogManager.instance.write('EnvPath', msg);
-    // Debug: 打印原始输出
-    _log('stdout (前1000字符): ${stdoutText.length > 1000 ? stdoutText.substring(0, 1000) : stdoutText}');
-    if (stderrText.isNotEmpty) {
-      _log('stderr: $stderrText');
+
+    // 优先用 jsonResult
+    if (result.jsonResult != null) {
+      final parsed = EnvPathConfigResult.fromJson(result.jsonResult!);
+      _log('解析成功: ${parsed.items.length} 个变量, ${parsed.pathEntries.length} 个 PATH 条目');
+      return parsed;
     }
 
-    final marker = '@@RESULT|';
+    // 回退：从 stdout 提取
+    final stdoutText = result.stdout;
+    _log('stdout (前1000字符): ${stdoutText.length > 1000 ? stdoutText.substring(0, 1000) : stdoutText}');
+
+    const marker = '@@RESULT|';
     final startIdx = stdoutText.indexOf(marker);
     final String jsonText;
     if (startIdx >= 0) {
@@ -358,8 +219,8 @@ class EnvPathManager {
           .trim();
     }
 
-    if (stderrText.isNotEmpty && jsonText.isEmpty) {
-      throw StateError('PowerShell 执行失败：$stderrText');
+    if (result.stderr.isNotEmpty && jsonText.isEmpty) {
+      throw StateError('PowerShell 执行失败：${result.stderr}');
     }
 
     if (jsonText.isEmpty) {
@@ -372,16 +233,11 @@ class EnvPathManager {
       if (decoded is! Map<String, dynamic>) {
         throw StateError('检测结果格式无效。');
       }
-      final result = EnvPathConfigResult.fromJson(decoded);
-      // Debug: 打印每个 item 的状态
-      _log('解析成功: ${result.items.length} 个变量, ${result.pathEntries.length} 个 PATH 条目');
-      for (final item in result.items) {
-        _log('  ${item.variable}: source=${item.source}, exists=${item.exists}, val=${item.currentValue}');
-      }
-      return result;
+      final parsed = EnvPathConfigResult.fromJson(decoded);
+      _log('解析成功: ${parsed.items.length} 个变量, ${parsed.pathEntries.length} 个 PATH 条目');
+      return parsed;
     } on FormatException catch (error) {
       _log('JSON 解析失败: $error');
-      _log('jsonText: ${jsonText.length > 500 ? jsonText.substring(0, 500) : jsonText}');
       throw StateError('检测结果 JSON 解析失败：$error');
     }
   }

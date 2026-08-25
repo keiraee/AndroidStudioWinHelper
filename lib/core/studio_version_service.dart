@@ -1,123 +1,141 @@
+import 'package:androidstudiowinhelper/core/log_manager.dart';
 import 'package:androidstudiowinhelper/core/models/studio_version.dart';
+import 'package:androidstudiowinhelper/core/version/cdn_probe.dart';
+import 'package:androidstudiowinhelper/core/version/chocolatey_version_source.dart';
+import 'package:androidstudiowinhelper/core/version/url_guesser.dart';
+import 'package:androidstudiowinhelper/core/version/version_source.dart';
+import 'package:androidstudiowinhelper/core/version/xml_version_source.dart';
 import 'package:http/http.dart' as http;
-import 'package:xml/xml.dart';
 
+/// 版本服务编排器 — 按优先级调用各数据源并合并结果
 class StudioVersionService {
-  static const _updatesUrl =
-      'https://dl.google.com/dl/android/studio/patches/updates.xml';
-
-  static const _downloadPage =
-      'https://developer.android.google.cn/studio?hl=zh-cn&download';
-  static const _previewPage =
-      'https://developer.android.google.cn/studio/preview?hl=zh-cn';
-
-  static const _oldDlBase =
-      'https://redirector.gvt1.com/edgedl/android/studio/install';
-
-  final http.Client _client;
-
   StudioVersionService({http.Client? client})
       : _client = client ?? http.Client();
+
+  final http.Client _client;
+  late final XmlVersionSource _xmlSource = XmlVersionSource(client: _client);
+  late final ChocolateyVersionSource _chocoSource = ChocolateyVersionSource(client: _client);
+  late final CdnProbe _cdnProbe = CdnProbe(client: _client);
 
   void dispose() => _client.close();
 
   Future<FetchVersionsResult> fetchVersions() async {
-    // 1. 解析 XML 获取当前版本元数据
     final versions = <StudioVersion>[];
     final warnings = <String>[];
-    final xmlResponse = await _client.get(Uri.parse(_updatesUrl));
-    if (xmlResponse.statusCode != 200) {
-      throw StateError('获取版本列表失败：HTTP ${xmlResponse.statusCode}');
-    }
-
-    final document = XmlDocument.parse(xmlResponse.body);
-    final product = document.findAllElements('product').firstWhere(
-          (e) => e.getAttribute('name') == 'Android Studio',
-          orElse: () => throw StateError('XML 中未找到 Android Studio 产品'),
-        );
-
     final knownBaseVers = <String>{};
 
-    for (final channel in product.findAllElements('channel')) {
-      final status = channel.getAttribute('status') ?? '';
-      final channelLabel = _channelLabel(status);
-
-      for (final build in channel.findAllElements('build')) {
-        final version = build.getAttribute('version') ?? '';
-        final number = build.getAttribute('number') ?? '';
-        final messageElement = build.findAllElements('message').firstOrNull;
-        final notes =
-            messageElement != null ? _stripHtml(messageElement.innerText) : '';
-
-        final base = _extractBaseVersion(version);
+    // 1. XML 数据源（主数据源）
+    final xmlResult = await _fetchSource(_xmlSource, warnings);
+    if (xmlResult != null) {
+      for (final v in xmlResult.versions) {
+        final base = UrlGuesser.extractBaseVersion(v.version);
         if (base.isNotEmpty) knownBaseVers.add(base);
-
-        versions.add(StudioVersion(
-          version: version,
-          codename: _extractCodename(version),
-          buildNumber: number,
-          channel: status,
-          channelLabel: channelLabel,
-          releaseNotes: notes,
-          downloadVersion: '',
-          downloadUrl: '',
-        ));
+        versions.add(v);
       }
     }
 
-    // 2. 抓取下载页面获取实际下载链接（最新版本）
+    // 2. 尝试从页面抓取下载链接
     final downloadUrls = <String, String>{};
     final scrapeWarnings = await _scrapeDownloadUrls(downloadUrls);
     warnings.addAll(scrapeWarnings);
+    LogManager.instance.write('VersionService', '从页面抓到 ${downloadUrls.length} 个下载链接');
 
-    // 3. 匹配下载链接到 XML 版本
+    // 3. 如果页面抓取失败，从 XML buildNumber 反推 URL 并通过 CDN 探测验证
+    if (downloadUrls.isEmpty && versions.isNotEmpty) {
+      LogManager.instance.write('VersionService', '页面抓取无结果，从 XML buildNumber 反推 URL 并探测 CDN');
+      for (final v in versions) {
+        if (v.downloadUrl.isNotEmpty) continue;
+        final guessed = UrlGuesser.guess(v);
+        if (guessed == null) continue;
+
+        final (guessedUrl, decodedVer) = guessed;
+        LogManager.instance.write('VersionService',
+            '反推 URL: ${v.version} (build=${v.buildNumber}, 解码=$decodedVer) -> $guessedUrl');
+
+        final probeResult = await _cdnProbe.probe(guessedUrl);
+        if (probeResult != null) {
+          LogManager.instance.write('VersionService',
+              '  CDN 探测通过: ${probeResult ~/ 1024 ~/ 1024}MB');
+          downloadUrls[decodedVer] = guessedUrl;
+          final base = UrlGuesser.extractBaseVersion(v.version);
+          if (base.isNotEmpty && !downloadUrls.containsKey(base)) {
+            downloadUrls[base] = guessedUrl;
+          }
+        } else {
+          LogManager.instance.write('VersionService', '  CDN 探测失败，跳过');
+        }
+      }
+    }
+
+    // 4. 匹配下载链接到 XML 版本
     for (var i = 0; i < versions.length; i++) {
       final v = versions[i];
-      final base = _extractBaseVersion(v.version);
-      if (base.isNotEmpty && downloadUrls.containsKey(base)) {
-        versions[i] = _copyWithUrl(v, downloadUrls[base]!);
+      final base = UrlGuesser.extractBaseVersion(v.version);
+      final decodedVer = UrlGuesser.decodeBuildNumberToVersion(v.buildNumber, v.version);
+
+      String? matchedUrl;
+      if (decodedVer != null && downloadUrls.containsKey(decodedVer)) {
+        matchedUrl = downloadUrls[decodedVer];
+      }
+      // 注意：移除了 base fallback，因为不同版本（stable/canary/RC）
+      // 共享同一个 base（如 "2026.1.1"），fallback 会导致错误匹配
+      if (matchedUrl != null) {
+        versions[i] = _copyWithUrl(v, matchedUrl);
       }
     }
 
-    // 4. 从 Chocolatey 补充历史版本
-    final (chocoVers, chocoWarnings) = await _fetchChocolateyVersions();
-    warnings.addAll(chocoWarnings);
-    for (final cv in chocoVers) {
-      final base = _extractChocoBase(cv);
-      if (base.isEmpty) continue;
-      // 跳过已存在于 XML 的版本（按主版本号避免重复）
-      if (knownBaseVers.any((k) => k.startsWith(base) || base.startsWith(k))) {
-        continue;
+    // 5. Chocolatey 数据源（历史版本补充）
+    final chocoResult = await _fetchSource(_chocoSource, warnings);
+    if (chocoResult != null) {
+      for (final cv in chocoResult.versions) {
+        final base = UrlGuesser.extractChocoBase(cv.version);
+        if (base.isEmpty) continue;
+        if (knownBaseVers.any((k) => k.startsWith(base) || base.startsWith(k))) {
+          continue;
+        }
+        knownBaseVers.add(base);
+        versions.add(cv);
       }
-      knownBaseVers.add(base);
-
-      final dlUrl =
-          '$_oldDlBase/$cv/android-studio-$cv-windows.exe';
-
-      versions.add(StudioVersion(
-        version: cv,
-        codename: '',
-        buildNumber: '',
-        channel: 'archive',
-        channelLabel: '历史',
-        releaseNotes: '',
-        downloadVersion: cv,
-        downloadUrl: dlUrl,
-        isHistorical: true,
-      ));
     }
 
-    // 按 version 排序列（新版在前）
+    // 6. 排序
     versions.sort((a, b) => b.version.compareTo(a.version));
 
     return FetchVersionsResult(versions: versions, warnings: warnings);
   }
 
+  Future<VersionSourceResult?> _fetchSource(
+    VersionSource source,
+    List<String> warnings,
+  ) async {
+    try {
+      LogManager.instance.write('VersionService', '获取 ${source.name} 数据源...');
+      final result = await source.fetch();
+      warnings.addAll(result.warnings);
+      LogManager.instance.write('VersionService',
+          '${source.name} 获取到 ${result.versions.length} 个版本');
+      return result;
+    } catch (e) {
+      LogManager.instance.write('VersionService', '${source.name} 失败: $e');
+      warnings.add('${source.name} 数据源获取失败: $e');
+      return null;
+    }
+  }
+
   Future<List<String>> _scrapeDownloadUrls(Map<String, String> urls) async {
     final warnings = <String>[];
-    for (final page in [_downloadPage, _previewPage]) {
+    const pages = [
+      'https://developer.android.google.cn/studio?hl=zh-cn&download',
+      'https://developer.android.google.cn/studio/preview?hl=zh-cn',
+    ];
+
+    for (final page in pages) {
       try {
-        final response = await _client.get(Uri.parse(page));
+        final response = await _client
+            .get(Uri.parse(page))
+            .timeout(const Duration(seconds: 15), onTimeout: () {
+          throw StateError('下载页面请求超时: $page');
+        });
         if (response.statusCode != 200) {
           warnings.add('下载页面获取失败 (HTTP ${response.statusCode}): $page');
           continue;
@@ -129,12 +147,15 @@ class StudioVersionService {
 
         for (final m in matches) {
           final url = m.group(0)!;
-          final baseMatch =
-              RegExp(r'/(\d+\.\d+\.\d+)\.\d+/').firstMatch(url);
-          if (baseMatch != null) {
-            final baseVer = baseMatch.group(1)!;
-            if (!urls.containsKey(baseVer)) {
-              urls[baseVer] = url;
+          final verMatch =
+              RegExp(r'/(\d+\.\d+\.\d+\.?\d*)/').firstMatch(url);
+          if (verMatch != null) {
+            final ver = verMatch.group(1)!;
+            if (!urls.containsKey(ver)) urls[ver] = url;
+            final parts = ver.split('.');
+            if (parts.length >= 3) {
+              final baseVer = '${parts[0]}.${parts[1]}.${parts[2]}';
+              if (!urls.containsKey(baseVer)) urls[baseVer] = url;
             }
           }
         }
@@ -143,46 +164,6 @@ class StudioVersionService {
       }
     }
     return warnings;
-  }
-
-  Future<(List<String>, List<String>)> _fetchChocolateyVersions() async {
-    final vers = <String>[];
-    final warnings = <String>[];
-    var page = 0;
-
-    // Chocolatey API XML 分页
-    try {
-      String? nextUrl =
-          'https://community.chocolatey.org/api/v2/Packages()?\$filter=Id%20eq%20%27androidstudio%27';
-
-      while (nextUrl != null && page < 20) {
-        final uri = Uri.parse(nextUrl);
-        final secureUrl = uri.replace(scheme: 'https').toString();
-
-        final response = await _client.get(Uri.parse(secureUrl));
-        if (response.statusCode != 200) break;
-
-        final body = response.body;
-        final entryPattern = RegExp(
-          r'<d:Version[^>]*>([^<]+)</d:Version>',
-        );
-        for (final m in entryPattern.allMatches(body)) {
-          final ver = m.group(1)!.trim();
-          if (ver.isNotEmpty && !vers.contains(ver)) {
-            vers.add(ver);
-          }
-        }
-
-        final nextMatch =
-            RegExp(r'<link rel="next" href="([^"]+)"').firstMatch(body);
-        nextUrl = nextMatch?.group(1)?.replaceAll('&amp;', '&');
-        page++;
-      }
-    } catch (e) {
-      warnings.add('Chocolatey 版本获取异常: $e');
-    }
-
-    return (vers, warnings);
   }
 
   StudioVersion _copyWithUrl(StudioVersion v, String url) {
@@ -195,44 +176,7 @@ class StudioVersionService {
       releaseNotes: v.releaseNotes,
       downloadVersion: v.downloadVersion,
       downloadUrl: url,
+      isHistorical: v.isHistorical,
     );
-  }
-
-  static String _extractChocoBase(String ver) {
-    // 4-part version like "2024.2.1.11" → base "2024.2"
-    final parts = ver.split('.');
-    if (parts.length >= 2) return '${parts[0]}.${parts[1]}';
-    return ver;
-  }
-
-  static String _channelLabel(String status) => switch (status) {
-        'release' => 'Stable',
-        'beta' => 'Beta',
-        'eap' => 'Canary',
-        'milestone' => 'Dev',
-        _ => status,
-      };
-
-  static String _extractCodename(String version) {
-    final parts = version.split('|');
-    return parts.isNotEmpty ? parts.first.trim() : '';
-  }
-
-  static String _extractBaseVersion(String version) {
-    final match = RegExp(r'(\d+\.\d+\.\d+)').firstMatch(version);
-    return match?.group(1) ?? '';
-  }
-
-  static String _stripHtml(String html) {
-    return html
-        .replaceAll(RegExp(r'<[^>]+>'), '')
-        .replaceAll('&amp;', '&')
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>')
-        .replaceAll('&quot;', '"')
-        .replaceAll('&#39;', "'")
-        .replaceAll('&apos;', "'")
-        .replaceAll(RegExp(r'\n\s*\n+'), '\n\n')
-        .trim();
   }
 }

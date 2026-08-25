@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$SdkDir = "",
     [string]$ResultFile = "",
     [string]$Proxy = "",
@@ -187,32 +187,54 @@ if ($Action -eq "list-installed" -or $Action -eq "") {
                 $trimmed = $line.Trim()
                 if ($trimmed -match "Installed packages") { $inSection = $true; continue }
                 if ($trimmed -match "Available Packages" -or $trimmed -match "Available Updates") { $inSection = $false; continue }
-                if ($inSection -and $trimmed -and $trimmed -notmatch "^-+$" -and $trimmed -notmatch "^\s*$") {
-                    $result.installed += $trimmed
+                if ($inSection -and $trimmed -and $trimmed -notmatch "^-+$" -and $trimmed -notmatch "^\s*$" -and $trimmed -notmatch "^Path\s") {
+                    # 解析 sdkmanager 表格行: "pkg  |  version  |  description  |  location"
+                    $parts = $trimmed -split '\s*\|\s*' | ForEach-Object { $_.Trim() }
+                    if ($parts.Count -ge 3) {
+                        $result.installed += @{
+                            path = $parts[0]
+                            version = $parts[1]
+                            description = $parts[2]
+                            location = if ($parts.Count -ge 4) { $parts[3] } else { "" }
+                        }
+                    } elseif ($parts.Count -ge 1 -and $parts[0]) {
+                        $result.installed += @{ path = $parts[0]; version = ""; description = ""; location = "" }
+                    }
                 }
             }
         } catch {
             Write-Log "查询已安装包失败: $_"
         }
 
-        # 可用包（只取名称，不取全部）
+        # 可用包（带超时，防止网络问题导致卡死）
         try {
-            $availOut = & $cmdlineToolsPath --sdk_root=$SdkDir --list 2>&1 | Out-String
-            $inAvail = $false
-            $availCount = 0
-            foreach ($line in ($availOut -split "`n")) {
-                $trimmed = $line.Trim()
-                if ($trimmed -match "Available Packages") { $inAvail = $true; continue }
-                if ($trimmed -match "Available Updates") { $inAvail = $false; continue }
-                if ($inAvail -and $trimmed -and $trimmed -notmatch "^-+$" -and $trimmed -notmatch "^\s*$" -and $availCount -lt 200) {
-                    # 提取包名（第一个字段）
-                    $pkgName = ($trimmed -split '\s+')[0]
-                    if ($pkgName -and $pkgName -notmatch "^Available" -and $pkgName -notmatch "^Path$") {
-                        $result.available += $pkgName
-                        $availCount++
+            $job = Start-Job -ScriptBlock {
+                param($sdkRoot, $toolsPath)
+                & $toolsPath --sdk_root=$sdkRoot --list 2>&1 | Out-String
+            } -ArgumentList $SdkDir, $cmdlineToolsPath
+
+            $finished = Wait-Job $job -Timeout 15
+            if ($finished) {
+                $availOut = Receive-Job $job
+                $inAvail = $false
+                $availCount = 0
+                foreach ($line in ($availOut -split "`n")) {
+                    $trimmed = $line.Trim()
+                    if ($trimmed -match "Available Packages") { $inAvail = $true; continue }
+                    if ($trimmed -match "Available Updates") { $inAvail = $false; continue }
+                    if ($inAvail -and $trimmed -and $trimmed -notmatch "^-+$" -and $trimmed -notmatch "^\s*$" -and $availCount -lt 200) {
+                        $pkgName = ($trimmed -split '\s+')[0]
+                        if ($pkgName -and $pkgName -notmatch "^Available" -and $pkgName -notmatch "^Path$") {
+                            $result.available += $pkgName
+                            $availCount++
+                        }
                     }
                 }
+            } else {
+                Write-Log "查询可用包超时(15s)，跳过"
+                Stop-Job $job
             }
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
         } catch {
             Write-Log "查询可用包失败: $_"
         }
