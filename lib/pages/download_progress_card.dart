@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'package:androidstudiowinhelper/core/format_utils.dart';
 import 'package:androidstudiowinhelper/core/models/download_task.dart';
 
 enum DownloadAction { start, pause, resume, cancel, open }
@@ -79,7 +80,7 @@ class DownloadProgressCard extends StatelessWidget {
         Row(
           children: [
             Text(
-              '${t.percentInt}%  ${_formatBytes(t.downloadedBytes)} / ${_formatBytes(t.totalBytes)}',
+              '${t.percentInt}%  ${FormatUtils.bytes(t.downloadedBytes)} / ${FormatUtils.bytes(t.totalBytes)}',
               style: textTheme.bodySmall?.copyWith(
                 fontFamily: 'Consolas',
                 fontSize: 12,
@@ -88,7 +89,7 @@ class DownloadProgressCard extends StatelessWidget {
             const Spacer(),
             if (t.speedBytesPerSec > 0)
               Text(
-                '${_formatSpeed(t.speedBytesPerSec)}  ',
+                '${FormatUtils.speed(t.speedBytesPerSec)}  ',
                 style: textTheme.bodySmall?.copyWith(
                   fontFamily: 'Consolas',
                   fontSize: 12,
@@ -97,7 +98,7 @@ class DownloadProgressCard extends StatelessWidget {
               ),
             if (t.eta != null)
               Text(
-                '剩余 ${_formatEta(t.eta!)}',
+                '剩余 ${FormatUtils.duration(t.eta!)}',
                 style: textTheme.bodySmall?.copyWith(
                   fontSize: 12,
                   color: colorScheme.onSurfaceVariant,
@@ -105,6 +106,11 @@ class DownloadProgressCard extends StatelessWidget {
               ),
           ],
         ),
+        // 分片与重试信息
+        if (t.totalChunks != null && t.totalChunks! > 1) ...[
+          const SizedBox(height: 4),
+          _buildChunkRetryLine(context, colorScheme, textTheme),
+        ],
         const SizedBox(height: 8),
         Row(
           children: [
@@ -131,6 +137,34 @@ class DownloadProgressCard extends StatelessWidget {
     );
   }
 
+  /// 构建分片/重试状态行。
+  Widget _buildChunkRetryLine(
+    BuildContext context,
+    ColorScheme colorScheme,
+    TextTheme textTheme,
+  ) {
+    final t = task!;
+    final completed = t.completedChunks ?? 0;
+    final total = t.totalChunks ?? 0;
+    final retries = t.totalRetryCount ?? 0;
+
+    final parts = <String>[];
+    parts.add('分片: $completed/$total 完成');
+    if (retries > 0) {
+      parts.add('重试: $retries 次');
+    }
+
+    return Text(
+      parts.join(' · '),
+      style: textTheme.bodySmall?.copyWith(
+        fontSize: 11,
+        color: retries > 0
+            ? colorScheme.tertiary
+            : colorScheme.onSurfaceVariant,
+      ),
+    );
+  }
+
   Widget _buildPaused(BuildContext context) {
     final t = task!;
     final colorScheme = Theme.of(context).colorScheme;
@@ -149,7 +183,7 @@ class DownloadProgressCard extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         Text(
-          '已暂停  ${t.percentInt}%  ${_formatBytes(t.downloadedBytes)} / ${_formatBytes(t.totalBytes)}',
+          '已暂停  ${t.percentInt}%  ${FormatUtils.bytes(t.downloadedBytes)} / ${FormatUtils.bytes(t.totalBytes)}',
           style: textTheme.bodySmall?.copyWith(
             fontFamily: 'Consolas',
             fontSize: 12,
@@ -212,6 +246,9 @@ class DownloadProgressCard extends StatelessWidget {
     TextTheme textTheme,
   ) {
     final t = task!;
+    final hasChunkInfo = t.totalChunks != null && t.totalChunks! > 1;
+    final retries = t.totalRetryCount ?? 0;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -231,6 +268,37 @@ class DownloadProgressCard extends StatelessWidget {
             ),
           ],
         ),
+        // 分片失败详情
+        if (hasChunkInfo) ...[
+          const SizedBox(height: 4),
+          Text(
+            _buildErrorChunkDetail(t),
+            style: textTheme.bodySmall?.copyWith(
+              fontSize: 11,
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+        // 重试信息
+        if (retries > 0) ...[
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Icon(Icons.warning_amber_rounded,
+                  size: 14, color: colorScheme.tertiary),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  '自动重试已尝试 $retries 次',
+                  style: textTheme.bodySmall?.copyWith(
+                    fontSize: 11,
+                    color: colorScheme.tertiary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
         const SizedBox(height: 8),
         Row(
           children: [
@@ -257,32 +325,12 @@ class DownloadProgressCard extends StatelessWidget {
     );
   }
 
-  // ── 格式化工具 ──
-
-  static String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  /// 构建错误状态下的分片详情文字。
+  String _buildErrorChunkDetail(DownloadTask t) {
+    final completed = t.completedChunks ?? 0;
+    final total = t.totalChunks ?? 0;
+    final failed = total - completed;
+    return '分片进度: $completed/$total 完成, $failed 个失败';
   }
 
-  static String _formatSpeed(int bytesPerSec) {
-    if (bytesPerSec < 1024) return '$bytesPerSec B/s';
-    if (bytesPerSec < 1024 * 1024) {
-      return '${(bytesPerSec / 1024).toStringAsFixed(1)} KB/s';
-    }
-    return '${(bytesPerSec / (1024 * 1024)).toStringAsFixed(1)} MB/s';
-  }
-
-  static String _formatEta(Duration eta) {
-    if (eta.inHours > 0) {
-      return '${eta.inHours}小时${eta.inMinutes % 60}分';
-    }
-    if (eta.inMinutes > 0) {
-      return '${eta.inMinutes}分${eta.inSeconds % 60}秒';
-    }
-    return '${eta.inSeconds}秒';
-  }
 }

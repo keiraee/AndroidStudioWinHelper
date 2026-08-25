@@ -19,6 +19,9 @@ class DownloadTask {
     this.speedBytesPerSec = 0,
     this.errorMessage = '',
     this.startTime,
+    this.totalChunks,
+    this.completedChunks,
+    this.totalRetryCount,
   });
 
   final String versionKey;
@@ -31,6 +34,15 @@ class DownloadTask {
   final int speedBytesPerSec;
   final String errorMessage;
   final DateTime? startTime;
+
+  /// 总分片数（仅在分片下载时有值）。
+  final int? totalChunks;
+
+  /// 已完成的分片数。
+  final int? completedChunks;
+
+  /// 所有分片累计重试次数之和。
+  final int? totalRetryCount;
 
   double get percent =>
       totalBytes > 0 ? downloadedBytes / totalBytes : 0.0;
@@ -61,6 +73,9 @@ class DownloadTask {
     String? errorMessage,
     DateTime? startTime,
     String? filePath,
+    int? totalChunks,
+    int? completedChunks,
+    int? totalRetryCount,
   }) {
     return DownloadTask(
       versionKey: versionKey,
@@ -73,6 +88,9 @@ class DownloadTask {
       speedBytesPerSec: speedBytesPerSec ?? this.speedBytesPerSec,
       errorMessage: errorMessage ?? this.errorMessage,
       startTime: startTime ?? this.startTime,
+      totalChunks: totalChunks ?? this.totalChunks,
+      completedChunks: completedChunks ?? this.completedChunks,
+      totalRetryCount: totalRetryCount ?? this.totalRetryCount,
     );
   }
 }

@@ -3,14 +3,17 @@ import 'dart:io';
 
 import 'package:androidstudiowinhelper/core/models/android_studio_install.dart';
 import 'package:androidstudiowinhelper/core/models/scan_progress.dart';
+import 'package:androidstudiowinhelper/core/powershell_runner.dart';
 import 'package:androidstudiowinhelper/core/script_locator.dart';
 
 typedef DetectProgressCallback = void Function(ScanProgress progress);
 
 class AndroidStudioDetector {
-  AndroidStudioDetector({this.scriptPath});
+  AndroidStudioDetector({this.scriptPath, PowerShellRunner? runner})
+      : _runner = runner ?? PowerShellRunner(logTag: 'Detect');
 
   final String? scriptPath;
+  final PowerShellRunner _runner;
 
   Future<AndroidStudioDetectionResult> detectAll({
     bool deepScan = false,
@@ -27,164 +30,38 @@ class AndroidStudioDetector {
       throw StateError('未找到检测脚本：$resolvedScriptPath');
     }
 
-    if (onProgress == null) {
-      return _detectWithoutProgress(scriptFile, deepScan);
-    }
-
-    return _detectWithProgress(scriptFile, deepScan, onProgress);
-  }
-
-  List<String> _powershellArgs(File scriptFile, bool deepScan, bool withProgress) {
-    return [
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      scriptFile.absolute.path,
+    final extraArgs = [
       '-Json',
-      if (withProgress) '-Progress',
       if (deepScan) '-DeepScan',
     ];
-  }
 
-  Future<AndroidStudioDetectionResult> _detectWithoutProgress(
-    File scriptFile,
-    bool deepScan,
-  ) async {
-    final result = await Process.run(
-      'powershell.exe',
-      _powershellArgs(scriptFile, deepScan, false),
-      stdoutEncoding: utf8,
-      stderrEncoding: utf8,
+    final result = await _runner.run(
+      scriptPath: scriptFile.absolute.path,
+      extraArgs: extraArgs,
+      onProgress: onProgress,
     );
 
-    return _parseOutput(
-      stdoutText: _decodeText(result.stdout),
-      stderrText: _decodeText(result.stderr),
-    );
-  }
-
-  Future<AndroidStudioDetectionResult> _detectWithProgress(
-    File scriptFile,
-    bool deepScan,
-    DetectProgressCallback onProgress,
-  ) async {
-    final process = await Process.start(
-      'powershell.exe',
-      _powershellArgs(scriptFile, deepScan, true),
-    );
-
-    final stdoutBuffer = StringBuffer();
-    final stderrBuffer = StringBuffer();
-    final stdoutBytes = <int>[];
-
-    process.stdout.listen(
-      (chunk) {
-        stdoutBytes.addAll(chunk);
-        _drainLines(stdoutBytes, (line) {
-          stdoutBuffer.writeln(line);
-          final progress = _parseProgressLine(line);
-          if (progress != null) {
-            onProgress(progress);
-          }
-        });
-      },
-      onError: (Object error, StackTrace _) {
-        stderrBuffer.writeln('stdout 读取失败：$error');
-      },
-    );
-
-    process.stderr.listen(
-      (chunk) {
-        stderrBuffer.write(_decodeBytes(chunk));
-      },
-      onError: (Object error, StackTrace _) {
-        stderrBuffer.writeln('stderr 读取失败：$error');
-      },
-    );
-
-    final exitCode = await process.exitCode;
-
-    if (stdoutBytes.isNotEmpty) {
-      final remaining = _decodeBytes(stdoutBytes);
-      if (remaining.trim().isNotEmpty) {
-        stdoutBuffer.writeln(remaining);
-        for (final line in remaining.split('\n')) {
-          final progress = _parseProgressLine(line.trim());
-          if (progress != null) {
-            onProgress(progress);
-          }
-        }
-      }
+    if (!result.success && result.stdout.isEmpty) {
+      throw StateError('PowerShell 执行失败：${result.stderr}');
     }
 
-    if (exitCode != 0 && stdoutBuffer.isEmpty) {
-      throw StateError('PowerShell 执行失败：${stderrBuffer.toString()}');
+    return _parseOutput(result);
+  }
+
+  AndroidStudioDetectionResult _parseOutput(PowerShellResult result) {
+    // 优先用 @@RESULT|@@ 标记提取的 JSON
+    if (result.jsonResult != null) {
+      final installs = _parseInstalls(result.jsonResult);
+      final selected = _selectDefaultInstall(installs);
+      return AndroidStudioDetectionResult(
+        installs: installs,
+        selected: selected?.$1,
+        selectionReason: selected?.$2,
+      );
     }
 
-    return _parseOutput(
-      stdoutText: stdoutBuffer.toString(),
-      stderrText: stderrBuffer.toString(),
-    );
-  }
-
-  void _drainLines(List<int> buffer, void Function(String line) onLine) {
-    while (true) {
-      var newlineIndex = buffer.indexOf(10);
-      if (newlineIndex == -1) return;
-
-      var lineBytes = buffer.sublist(0, newlineIndex);
-      buffer.removeRange(0, newlineIndex + 1);
-
-      if (lineBytes.isNotEmpty && lineBytes.last == 13) {
-        lineBytes = lineBytes.sublist(0, lineBytes.length - 1);
-      }
-
-      final line = _decodeBytes(lineBytes).trim();
-      if (line.isNotEmpty) {
-        onLine(line);
-      }
-    }
-  }
-
-  String _decodeText(Object? data) {
-    if (data == null) return '';
-    if (data is String) return data;
-    if (data is List<int>) return _decodeBytes(data);
-    return data.toString();
-  }
-
-  String _decodeBytes(List<int> bytes) {
-    if (bytes.isEmpty) return '';
-    try {
-      return utf8.decode(bytes);
-    } on FormatException {
-      return utf8.decode(bytes, allowMalformed: true);
-    }
-  }
-
-  ScanProgress? _parseProgressLine(String line) {
-    if (!line.startsWith('@@PROGRESS|') || !line.endsWith('@@')) return null;
-
-    final body = line.substring('@@PROGRESS|'.length, line.length - 2);
-    final parts = body.split('|');
-    if (parts.length < 2) return null;
-
-    final percent = int.tryParse(parts[0]) ?? 0;
-    final message = parts[1];
-    final path = parts.length > 2 ? parts.sublist(2).join('|') : '';
-
-    return ScanProgress(
-      percent: percent.clamp(0, 100),
-      message: message,
-      path: path,
-    );
-  }
-
-  AndroidStudioDetectionResult _parseOutput({
-    required String stdoutText,
-    required String stderrText,
-  }) {
+    // 回退：从 stdout 中提取 JSON
+    final stdoutText = result.stdout;
     final marker = '@@RESULT|';
     final startIdx = stdoutText.indexOf(marker);
     final String jsonText;
@@ -202,10 +79,6 @@ class AndroidStudioDetector {
           .where((line) => !line.trim().startsWith('@@PROGRESS|'))
           .join('\n')
           .trim();
-    }
-
-    if (stderrText.isNotEmpty && jsonText.isEmpty) {
-      throw StateError('PowerShell 执行失败：$stderrText');
     }
 
     if (jsonText.isEmpty) {
