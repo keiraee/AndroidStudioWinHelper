@@ -30,7 +30,7 @@ class ScanCache {
       File('${_cacheDir.path}\\version_cache.json');
 
   static File get _envConfigFile =>
-      File('${Directory.current.path}\\env_config_cache.json');
+      File('${_cacheDir.path}\\env_config_cache.json');
 
   // ── 磁盘扫描缓存 ──
 
