@@ -35,7 +35,7 @@ class HypervManager {
       throw StateError('未找到检测脚本：$scriptPath');
     }
 
-    final result = await _runner.runElevated(
+    final result = await _runner.run(
       scriptPath: scriptFile.absolute.path,
       onProgress: onProgress,
     );
