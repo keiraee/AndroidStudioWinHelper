@@ -418,9 +418,13 @@ class DownloadManager extends ChangeNotifier {
 
   Future<void> cancel(String versionKey) async {
     LogManager.instance.write('Download', '[$versionKey] 取消下载');
+    final task = _tasks[versionKey];
     final downloader = _downloaders.remove(versionKey);
     if (downloader != null) {
       await downloader.cancel();
+    } else if (task != null) {
+      // 恢复出的暂停任务没有活跃 downloader，需手动清理 .part / .part.meta
+      await _cleanupPartFiles(task);
     }
     _speedWatchers.remove(versionKey);
     _speedSamples.remove(versionKey);
@@ -428,6 +432,26 @@ class DownloadManager extends ChangeNotifier {
     _tasks.remove(versionKey);
     if (!_disposed) notifyListeners();
     LogManager.instance.write('Download', '[$versionKey] 取消完成');
+  }
+
+  Future<void> _cleanupPartFiles(DownloadTask task) async {
+    final partPath = task.filePath.endsWith('.part')
+        ? task.filePath
+        : (task.fileName.isNotEmpty
+            ? '${getDownloadsDir()}\\${task.fileName}.part'
+            : null);
+    if (partPath == null || partPath.isEmpty) return;
+
+    try {
+      final partFile = File(partPath);
+      if (await partFile.exists()) {
+        await partFile.delete();
+        LogManager.instance.write('Download', '已删除临时文件: $partPath');
+      }
+      await MetaStore.delete(partPath);
+    } catch (e) {
+      LogManager.instance.write('Download', '清理临时文件失败 ($partPath): $e');
+    }
   }
 
   // ── 打开文件 ──
