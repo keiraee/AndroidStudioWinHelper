@@ -173,6 +173,7 @@ class DownloadManager extends ChangeNotifier {
     String versionKey,
     String url, {
     String? proxyUrl,
+    String? expectedSha256,
   }) async {
     if (_downloaders.containsKey(versionKey)) {
       LogManager.instance.write('Download', '[$versionKey] 已在下载中，跳过');
@@ -257,7 +258,8 @@ class DownloadManager extends ChangeNotifier {
       LogManager.instance.write('Download', '构建分片下载器...');
 
       final customHeaders = {
-        'Referer': 'https://developer.android.google.cn/studio',
+        // 与官网归档页一致，降低被当成异常爬虫的概率
+        'Referer': 'https://developer.android.com/studio/archive',
         'Accept': '*/*',
       };
 
@@ -341,13 +343,25 @@ class DownloadManager extends ChangeNotifier {
               LogManager.instance.write('Download', '[$versionKey] 文件校验失败，删除无效文件');
               try { File(finalPath).deleteSync(); } catch (_) {}
               _setError(versionKey,
-                  '下载的文件不是有效的安装包（可能被 Google 服务器拦截）。请尝试在浏览器中手动下载。');
+                  '下载的文件不是有效的安装包（可能被 Google 服务器拦截或返回了错误页）。请检查代理后重试，或在浏览器打开归档页手动下载。');
               return;
             }
 
-            // 下载完成，计算 SHA256 记入日志
+            // 若归档页提供了 SHA-256，则强制校验
             LogManager.instance.write('Download', '[$versionKey] 计算 SHA256...');
             final sha256 = await FileUtils.sha256(finalPath);
+            LogManager.instance.write('Download',
+                '[$versionKey] SHA256: $sha256');
+            final expected = expectedSha256?.trim().toLowerCase() ?? '';
+            if (expected.isNotEmpty && sha256.isNotEmpty && sha256 != expected) {
+              LogManager.instance.write('Download',
+                  '[$versionKey] SHA256 不匹配: expected=$expected actual=$sha256');
+              try { File(finalPath).deleteSync(); } catch (_) {}
+              _setError(versionKey,
+                  '安装包校验失败（SHA-256 与官方归档不一致），已删除损坏文件。请重试下载。');
+              return;
+            }
+
             LogManager.instance.write('Download',
                 '[$versionKey] 下载完成: $finalPath (${File(finalPath).lengthSync()} bytes, SHA256: $sha256)');
 

@@ -31,9 +31,11 @@ class LogManager {
     // 打印到控制台
     print(line);
 
-    // 写入文件
-    _ensureSink(dateStr);
-    _currentSink?.writeln(line);
+    // 写入文件（未 init 时仅打印，不抛错）
+    try {
+      _ensureSink(dateStr);
+      _currentSink?.writeln(line);
+    } catch (_) {}
   }
 
   void _ensureSink(String dateStr) {

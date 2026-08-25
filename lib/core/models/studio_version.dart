@@ -8,6 +8,7 @@ class StudioVersion {
     required this.releaseNotes,
     required this.downloadUrl,
     required this.downloadVersion,
+    this.sha256 = '',
     this.isHistorical = false,
   });
 
@@ -19,6 +20,7 @@ class StudioVersion {
   final String releaseNotes;
   final String downloadUrl;
   final String downloadVersion;
+  final String sha256;
   final bool isHistorical;
 
   factory StudioVersion.fromJson(Map<String, dynamic> json) {
@@ -31,6 +33,7 @@ class StudioVersion {
       releaseNotes: json['releaseNotes'] as String? ?? '',
       downloadUrl: json['downloadUrl'] as String? ?? '',
       downloadVersion: json['downloadVersion'] as String? ?? '',
+      sha256: json['sha256'] as String? ?? '',
       isHistorical: json['isHistorical'] as bool? ?? false,
     );
   }
@@ -44,6 +47,7 @@ class StudioVersion {
         'releaseNotes': releaseNotes,
         'downloadUrl': downloadUrl,
         'downloadVersion': downloadVersion,
+        'sha256': sha256,
         'isHistorical': isHistorical,
       };
 }

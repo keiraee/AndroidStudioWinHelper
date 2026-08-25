@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:androidstudiowinhelper/core/diagnostics/proxy_manager.dart';
+import 'package:androidstudiowinhelper/core/download_license_consent.dart';
 import 'package:androidstudiowinhelper/core/download_manager.dart';
 import 'package:androidstudiowinhelper/core/models/download_task.dart';
 import 'package:androidstudiowinhelper/core/models/scan_progress.dart';
@@ -93,19 +94,66 @@ class _DownloadTabState extends State<DownloadTab> {
   }
 
   void _handleDownloadAction(StudioVersion v, DownloadAction action) {
-    final proxyUrl = _activeProxyUrl();
     switch (action) {
       case DownloadAction.start:
-        _downloadManager.start(v.version, v.downloadUrl, proxyUrl: proxyUrl);
+        _startDownload(v);
       case DownloadAction.pause:
         _downloadManager.pause(v.version);
       case DownloadAction.resume:
-        _downloadManager.start(v.version, v.downloadUrl, proxyUrl: proxyUrl);
+        _startDownload(v);
       case DownloadAction.cancel:
         _downloadManager.cancel(v.version);
       case DownloadAction.open:
         _downloadManager.openFile(v.version);
     }
+  }
+
+  Future<void> _startDownload(StudioVersion v) async {
+    if (v.downloadUrl.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('该版本没有可用的 Windows 下载链接')),
+      );
+      return;
+    }
+
+    // 对应官网归档页 TOS 墙：应用内一次同意后即可直接下载
+    if (!DownloadLicenseConsent.hasAccepted()) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('下载前需同意许可'),
+          content: const SingleChildScrollView(
+            child: Text(
+              'Android Studio 安装包受 Android Software Development Kit '
+              'License Agreement 约束。\n\n'
+              '继续下载即表示你同意该协议条款（与官网归档页点击 '
+              '“I agree to the terms” 等效）。\n\n'
+              '协议原文：https://developer.android.com/studio/terms',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('同意并下载'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true) return;
+      await DownloadLicenseConsent.accept();
+    }
+
+    _downloadManager.start(
+      v.version,
+      v.downloadUrl,
+      proxyUrl: _activeProxyUrl(),
+      expectedSha256: v.sha256.isEmpty ? null : v.sha256,
+    );
   }
 
   @override
