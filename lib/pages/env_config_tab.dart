@@ -51,10 +51,13 @@ class _EnvConfigTabState extends State<EnvConfigTab> {
         _result = result;
         _progress = const ScanProgress(percent: 100, message: '检测完成');
         for (final item in result.items) {
-          if (!_controllers.containsKey(item.variable)) {
+          final existing = _controllers[item.variable];
+          if (existing == null) {
             _controllers[item.variable] = TextEditingController(
               text: item.currentValue,
             );
+          } else if (existing.text != item.currentValue) {
+            existing.text = item.currentValue;
           }
         }
       });
