@@ -685,15 +685,34 @@ class ChunkedDownloader {
         });
       },
       onDone: () {
-        // 等最后的写入完成后标记完成
+        // 等最后的写入完成后校验分片字节数再标记完成
         lastWrite.whenComplete(() {
           if (!streamDone.isCompleted) {
             if (work.status != ChunkStatus.completed &&
                 work.status != ChunkStatus.failed) {
-              work.status = ChunkStatus.completed;
-              _onChunkDone(work);
+              final expected = work.state.totalBytes;
+              if (work.downloadedBytes >= expected) {
+                work.status = ChunkStatus.completed;
+                _onChunkDone(work);
+                streamDone.complete();
+              } else {
+                LogManager.instance.write(
+                  'ChunkedDownloader',
+                  '分片 ${work.state.index} 未下完: '
+                  '${work.downloadedBytes}/$expected，标记失败以便重试',
+                );
+                work.status = ChunkStatus.failed;
+                _onChunkDone(work);
+                streamDone.completeError(
+                  StateError(
+                    'Chunk ${work.state.index} incomplete: '
+                    '${work.downloadedBytes}/$expected',
+                  ),
+                );
+              }
+            } else {
+              streamDone.complete();
             }
-            streamDone.complete();
           }
         });
       },
@@ -792,9 +811,10 @@ class ChunkedDownloader {
     await _raf?.close();
     _raf = null;
 
-    // 检查是否所有分片确实完成
+    // 检查是否所有分片确实完成，且总字节一致
     final meta = _buildCurrentMeta();
-    if (!meta.allCompleted) {
+    if (!meta.allCompleted ||
+        (meta.totalBytes > 0 && meta.downloadedBytes != meta.totalBytes)) {
       _handleError(
           '下载未完成: ${meta.downloadedBytes}/${meta.totalBytes} 字节');
       return;
