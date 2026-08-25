@@ -174,10 +174,12 @@ class PowerShellRunner {
 
     // 构建 PS1 参数数组
     // 用 PowerShell 数组展开（splatting）传递参数，避免逗号分隔的问题
-    final argsArray = extraArgs.map((a) => "  '$a'").join(',\n');
+    // 单引号字符串内的 ' 需写成 ''
+    String quote(String value) => "'${value.replaceAll("'", "''")}'";
+    final argsArray = extraArgs.map((a) => '  ${quote(a)}').join(',\n');
     final innerCall = extraArgs.isEmpty
-        ? "& '$scriptPath' -Json -ResultFile '$defaultResultFile'"
-        : '\$args = @(\n$argsArray\n)\n  & \'$scriptPath\' @args';
+        ? '& ${quote(scriptPath)} -Json -ResultFile ${quote(defaultResultFile)}'
+        : '\$args = @(\n$argsArray\n)\n  & ${quote(scriptPath)} @args';
 
     // 生成临时 .ps1 脚本（含错误保护，确保结果文件被写入）
     final ps1Content = '\$ErrorActionPreference = "Continue"\r\n'
