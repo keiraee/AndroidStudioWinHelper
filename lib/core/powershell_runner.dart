@@ -199,10 +199,11 @@ class PowerShellRunner {
     final admin = await _isAdmin();
     _log('当前管理员状态: $admin');
 
-    if (admin) {
-      // 已是管理员，直接执行（跳过 UAC）
-      _log('已是管理员，直接执行脚本');
-      try {
+    String? wrapperFile;
+    try {
+      if (admin) {
+        // 已是管理员，直接执行（跳过 UAC）
+        _log('已是管理员，直接执行脚本');
         final result = await Process.run(
           'powershell.exe',
           ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tempPs1File],
@@ -215,102 +216,110 @@ class PowerShellRunner {
         final stderrText = _decodeText(result.stderr);
         if (stdoutText.isNotEmpty) _log('stdout: $stdoutText');
         if (stderrText.isNotEmpty) _log('stderr: $stderrText');
-      } finally {
-        try { File(tempPs1File).deleteSync(); } catch (_) {}
+      } else {
+        // 需要 UAC 提权：通过 BAT 包装。
+        // 注意：不要在 Start-Process 返回后立刻删除 tempPs1，
+        // 提权子进程可能尚未读到脚本内容。
+        wrapperFile = '${Directory.systemTemp.path}\\aswh_ps_$timestamp.bat';
+        final wrapperContent = '@echo off\r\n'
+            'chcp 65001 >nul\r\n'
+            'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "'
+            "Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','$tempPs1File' -WindowStyle Hidden"
+            '"\r\n';
+        File(wrapperFile).writeAsStringSync(wrapperContent);
+        _log('临时 BAT: $wrapperFile');
+
+        try {
+          final result = await Process.run(
+            'cmd.exe',
+            ['/c', wrapperFile],
+            stdoutEncoding: null,
+            stderrEncoding: null,
+          );
+
+          final exitCode = result.exitCode;
+          final stderrText = _decodeText(result.stderr);
+          _log('BAT 执行完毕, exitCode: $exitCode');
+          if (stderrText.isNotEmpty) _log('stderr: $stderrText');
+
+          if (exitCode != 0) {
+            if (stderrText.contains('cancelled') ||
+                stderrText.contains('取消') ||
+                stderrText.contains('OperationStopped')) {
+              throw StateError('用户取消了管理员权限请求。');
+            }
+            throw StateError('提权执行失败（exitCode: $exitCode）：$stderrText');
+          }
+        } on ProcessException catch (e) {
+          _log('ProcessException: ${e.message}');
+          if (e.message.contains('740')) {
+            throw StateError('需要管理员权限，请在 UAC 弹窗中点击"是"。');
+          }
+          rethrow;
+        } finally {
+          try {
+            File(wrapperFile).deleteSync();
+          } catch (_) {}
+        }
       }
-    } else {
-      // 需要 UAC 提权：通过 BAT 包装
-      final wrapperFile = '${Directory.systemTemp.path}\\aswh_ps_$timestamp.bat';
-      final wrapperContent = '@echo off\r\n'
-          'chcp 65001 >nul\r\n'
-          'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "'
-          "Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','$tempPs1File' -WindowStyle Hidden"
-          '"\r\n';
-      File(wrapperFile).writeAsStringSync(wrapperContent);
-      _log('临时 BAT: $wrapperFile');
+
+      // 轮询等待结果文件（无论是否提权，脚本都会写入结果文件）
+      onProgress?.call(const ScanProgress(percent: 10, message: '正在等待脚本完成...'));
+
+      final resultFileObj = File(resultFile);
+      var waitMs = 0;
+      final timeoutMs = timeout.inMilliseconds;
+
+      while (!resultFileObj.existsSync() && waitMs < timeoutMs) {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        waitMs += 500;
+        final percent = 10 + ((waitMs / timeoutMs) * 80).toInt();
+        final secs = (waitMs / 1000).toInt();
+        onProgress?.call(ScanProgress(
+          percent: percent.clamp(10, 90),
+          message: '正在执行... (${secs}s)',
+        ));
+        if (waitMs % 5000 == 0) {
+          _log('等待结果文件... ${secs}s / ${timeout.inSeconds}s');
+        }
+      }
+
+      if (!resultFileObj.existsSync()) {
+        _log('超时: ${timeout.inSeconds}s 内结果文件未生成');
+        throw StateError('操作超时：脚本未完成（可能是 UAC 被拒绝或脚本执行失败）。');
+      }
+
+      _log('结果文件就绪, 等待 ${(waitMs / 1000).toStringAsFixed(1)}s');
+      onProgress?.call(const ScanProgress(percent: 95, message: '正在读取结果...'));
 
       try {
-        final result = await Process.run(
-          'cmd.exe',
-          ['/c', wrapperFile],
-          stdoutEncoding: null,
-          stderrEncoding: null,
+        final rawContent = resultFileObj.readAsStringSync();
+        _log('结果文件: ${rawContent.length > 1000 ? rawContent.substring(0, 1000) : rawContent}');
+
+        final decoded = jsonDecode(rawContent);
+        Map<String, dynamic>? jsonResult;
+        if (decoded is Map<String, dynamic>) {
+          jsonResult = decoded;
+        }
+
+        onProgress?.call(const ScanProgress(percent: 100, message: '执行完成。'));
+
+        return PowerShellResult(
+          stdout: rawContent,
+          stderr: '',
+          exitCode: 0,
+          jsonResult: jsonResult,
         );
-
-        final exitCode = result.exitCode;
-        final stderrText = _decodeText(result.stderr);
-        _log('BAT 执行完毕, exitCode: $exitCode');
-        if (stderrText.isNotEmpty) _log('stderr: $stderrText');
-
-        if (exitCode != 0) {
-          if (stderrText.contains('cancelled') ||
-              stderrText.contains('取消') ||
-              stderrText.contains('OperationStopped')) {
-            throw StateError('用户取消了管理员权限请求。');
-          }
-          throw StateError('提权执行失败（exitCode: $exitCode）：$stderrText');
-        }
-      } on ProcessException catch (e) {
-        _log('ProcessException: ${e.message}');
-        if (e.message.contains('740')) {
-          throw StateError('需要管理员权限，请在 UAC 弹窗中点击"是"。');
-        }
-        rethrow;
       } finally {
-        try { File(wrapperFile).deleteSync(); } catch (_) {}
-        try { File(tempPs1File).deleteSync(); } catch (_) {}
+        try {
+          resultFileObj.deleteSync();
+        } catch (_) {}
       }
-    }
-
-    // 轮询等待结果文件（无论是否提权，脚本都会写入结果文件）
-    onProgress?.call(const ScanProgress(percent: 10, message: '正在等待脚本完成...'));
-
-    final resultFileObj = File(resultFile);
-    var waitMs = 0;
-    final timeoutMs = timeout.inMilliseconds;
-
-    while (!resultFileObj.existsSync() && waitMs < timeoutMs) {
-      await Future<void>.delayed(const Duration(milliseconds: 500));
-      waitMs += 500;
-      final percent = 10 + ((waitMs / timeoutMs) * 80).toInt();
-      final secs = (waitMs / 1000).toInt();
-      onProgress?.call(ScanProgress(
-        percent: percent.clamp(10, 90),
-        message: '正在执行... (${secs}s)',
-      ));
-      if (waitMs % 5000 == 0) {
-        _log('等待结果文件... ${secs}s / ${timeout.inSeconds}s');
-      }
-    }
-
-    if (!resultFileObj.existsSync()) {
-      _log('超时: ${timeout.inSeconds}s 内结果文件未生成');
-      throw StateError('操作超时：脚本未完成（可能是 UAC 被拒绝或脚本执行失败）。');
-    }
-
-    _log('结果文件就绪, 等待 ${(waitMs / 1000).toStringAsFixed(1)}s');
-    onProgress?.call(const ScanProgress(percent: 95, message: '正在读取结果...'));
-
-    try {
-      final rawContent = resultFileObj.readAsStringSync();
-      _log('结果文件: ${rawContent.length > 1000 ? rawContent.substring(0, 1000) : rawContent}');
-
-      final decoded = jsonDecode(rawContent);
-      Map<String, dynamic>? jsonResult;
-      if (decoded is Map<String, dynamic>) {
-        jsonResult = decoded;
-      }
-
-      onProgress?.call(const ScanProgress(percent: 100, message: '执行完成。'));
-
-      return PowerShellResult(
-        stdout: rawContent,
-        stderr: '',
-        exitCode: 0,
-        jsonResult: jsonResult,
-      );
     } finally {
-      try { resultFileObj.deleteSync(); } catch (_) {}
+      // 结果轮询结束后再删临时脚本，避免提权子进程读文件竞态
+      try {
+        File(tempPs1File).deleteSync();
+      } catch (_) {}
     }
   }
 
