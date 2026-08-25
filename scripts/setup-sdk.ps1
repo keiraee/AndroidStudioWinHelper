@@ -271,6 +271,7 @@ if ($Action -eq "install") {
     }
 
     # 逐个安装
+    $failedCount = 0
     for ($i = 0; $i -lt $pkgList.Count; $i++) {
         $pkg = $pkgList[$i]
         $pct = 50 + [math]::Floor(40 * ($i + 1) / ($pkgList.Count + 1))
@@ -286,29 +287,57 @@ if ($Action -eq "install") {
                 Write-Log "安装成功: $pkg"
                 $installLog += "$pkg : OK"
             } else {
-                Write-Log "安装警告: $pkg"
-                $installLog += "$pkg : WARNING"
+                Write-Log "安装失败: $pkg (exit=$LASTEXITCODE)"
+                $installLog += "$pkg : FAILED"
+                $failedCount++
             }
         } catch {
             Write-Log "安装失败: $pkg - $_"
             $installLog += "$pkg : FAILED - $_"
+            $failedCount++
         }
     }
 
     # AEHD 驱动
     $aehdInstaller = "$SdkDir\extras\google\Android_Emulator_Hypervisor_Driver\silent_install.bat"
-    if ($pkgList -contains "extras;google;Android_Emulator_Hypervisor_Driver" -and (Test-Path $aehdInstaller)) {
-        Write-Log "安装 AEHD 驱动..."
-        try { & $aehdInstaller 2>&1 | Out-Null; $installLog += "AEHD Driver : OK" } catch {}
+    $aehdOk = $true
+    if ($pkgList -contains "extras;google;Android_Emulator_Hypervisor_Driver") {
+        if (Test-Path $aehdInstaller) {
+            Write-Log "安装 AEHD 驱动..."
+            try {
+                & $aehdInstaller 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+                    $installLog += "AEHD Driver : FAILED (exit=$LASTEXITCODE)"
+                    $aehdOk = $false
+                    $failedCount++
+                } else {
+                    $installLog += "AEHD Driver : OK"
+                }
+            } catch {
+                $installLog += "AEHD Driver : FAILED - $_"
+                $aehdOk = $false
+                $failedCount++
+            }
+        } else {
+            Write-Log "AEHD 安装器不存在: $aehdInstaller"
+            $installLog += "AEHD Driver : FAILED - installer missing"
+            $aehdOk = $false
+            $failedCount++
+        }
     }
 
-    Write-Progress2 -Percent 100 -Message "安装完成"
+    $allOk = ($failedCount -eq 0)
+    Write-Progress2 -Percent 100 -Message $(if ($allOk) { "安装完成" } else { "安装部分失败" })
     Write-Result2 @{
-        success = $true
-        message = "安装完成: $($installLog.Count) 个包"
+        success = $allOk
+        message = if ($allOk) {
+            "安装完成: $($installLog.Count) 个包"
+        } else {
+            "安装失败 $failedCount 个包（共 $($pkgList.Count) 个）"
+        }
         installLog = ($installLog -join "`n")
     }
-    exit 0
+    exit $(if ($allOk) { 0 } else { 1 })
 }
 
 if ($Action -eq "uninstall") {
@@ -321,6 +350,7 @@ if ($Action -eq "uninstall") {
     $pkgList = $Packages -split "\|" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
     $uninstallLog = @()
 
+    $failedCount = 0
     for ($i = 0; $i -lt $pkgList.Count; $i++) {
         $pkg = $pkgList[$i]
         Write-Progress2 -Percent (30 + [math]::Floor(60 * ($i + 1) / $pkgList.Count)) -Message "正在卸载: $pkg"
@@ -330,19 +360,26 @@ if ($Action -eq "uninstall") {
             $sdkArgs = Get-SdkmanagerArgs @("--uninstall", $pkg)
             $cmd = "`"$cmdlineToolsPath`" $($sdkArgs -join ' ')"
             $output = cmd.exe /c $cmd 2>&1 | Out-String
-            $uninstallLog += "$pkg : OK"
+            if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+                $uninstallLog += "$pkg : FAILED (exit=$LASTEXITCODE)"
+                $failedCount++
+            } else {
+                $uninstallLog += "$pkg : OK"
+            }
         } catch {
             $uninstallLog += "$pkg : FAILED - $_"
+            $failedCount++
         }
     }
 
-    Write-Progress2 -Percent 100 -Message "卸载完成"
+    $allOk = ($failedCount -eq 0)
+    Write-Progress2 -Percent 100 -Message $(if ($allOk) { "卸载完成" } else { "卸载部分失败" })
     Write-Result2 @{
-        success = $true
-        message = "卸载完成"
+        success = $allOk
+        message = if ($allOk) { "卸载完成" } else { "卸载失败 $failedCount 个包" }
         uninstallLog = ($uninstallLog -join "`n")
     }
-    exit 0
+    exit $(if ($allOk) { 0 } else { 1 })
 }
 
 if ($Action -eq "accept-licenses") {
