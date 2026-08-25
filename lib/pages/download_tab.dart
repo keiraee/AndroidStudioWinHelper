@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'package:androidstudiowinhelper/core/diagnostics/proxy_manager.dart';
 import 'package:androidstudiowinhelper/core/download_manager.dart';
 import 'package:androidstudiowinhelper/core/models/download_task.dart';
 import 'package:androidstudiowinhelper/core/models/scan_progress.dart';
@@ -20,6 +21,7 @@ class DownloadTab extends StatefulWidget {
 class _DownloadTabState extends State<DownloadTab> {
   final _versionService = StudioVersionService();
   final _downloadManager = DownloadManager();
+  final _proxyManager = ProxyManager();
 
   bool _loading = false;
   List<StudioVersion>? _versions;
@@ -27,12 +29,27 @@ class _DownloadTabState extends State<DownloadTab> {
   ScanProgress? _progress;
   String? _error;
   List<String>? _warnings;
+  bool _proxyReady = false;
 
   @override
   void initState() {
     super.initState();
     _versions = ScanCache.loadVersions();
     if (_versions != null) _recoverDownloads(_versions!);
+    _loadProxySchemes();
+  }
+
+  Future<void> _loadProxySchemes() async {
+    await _proxyManager.load();
+    if (!mounted) return;
+    setState(() => _proxyReady = true);
+  }
+
+  String? _activeProxyUrl() {
+    final scheme = _proxyManager.activeScheme;
+    final raw = scheme.httpsProxy ?? scheme.httpProxy;
+    if (raw == null || raw.trim().isEmpty) return null;
+    return raw.trim();
   }
 
   @override
@@ -76,13 +93,14 @@ class _DownloadTabState extends State<DownloadTab> {
   }
 
   void _handleDownloadAction(StudioVersion v, DownloadAction action) {
+    final proxyUrl = _activeProxyUrl();
     switch (action) {
       case DownloadAction.start:
-        _downloadManager.start(v.version, v.downloadUrl);
+        _downloadManager.start(v.version, v.downloadUrl, proxyUrl: proxyUrl);
       case DownloadAction.pause:
         _downloadManager.pause(v.version);
       case DownloadAction.resume:
-        _downloadManager.start(v.version, v.downloadUrl);
+        _downloadManager.start(v.version, v.downloadUrl, proxyUrl: proxyUrl);
       case DownloadAction.cancel:
         _downloadManager.cancel(v.version);
       case DownloadAction.open:
@@ -126,6 +144,45 @@ class _DownloadTabState extends State<DownloadTab> {
             ),
           ),
           const SizedBox(height: 12),
+          if (_proxyReady)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                children: [
+                  Text(
+                    '下载代理',
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      value: _proxyManager.activeSchemeName,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                        contentPadding:
+                            EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      items: [
+                        for (final scheme in _proxyManager.schemes)
+                          DropdownMenuItem(
+                            value: scheme.name,
+                            child: Text(scheme.name),
+                          ),
+                      ],
+                      onChanged: (name) async {
+                        if (name == null) return;
+                        _proxyManager.setActive(name);
+                        await _proxyManager.save();
+                        if (!mounted) return;
+                        setState(() {});
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
           if (channels.length > 1)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),

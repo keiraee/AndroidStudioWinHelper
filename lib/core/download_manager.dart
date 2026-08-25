@@ -169,7 +169,11 @@ class DownloadManager extends ChangeNotifier {
 
   // ── 开始/续传下载 ──
 
-  Future<void> start(String versionKey, String url) async {
+  Future<void> start(
+    String versionKey,
+    String url, {
+    String? proxyUrl,
+  }) async {
     if (_downloaders.containsKey(versionKey)) {
       LogManager.instance.write('Download', '[$versionKey] 已在下载中，跳过');
       return;
@@ -257,7 +261,7 @@ class DownloadManager extends ChangeNotifier {
         'Accept': '*/*',
       };
 
-      final downloader = ChunkedDownloader();
+      final downloader = ChunkedDownloader(proxyUrl: proxyUrl);
       _downloaders[versionKey] = downloader;
 
       // 启动速度计量

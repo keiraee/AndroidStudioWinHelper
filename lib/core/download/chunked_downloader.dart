@@ -38,15 +38,52 @@ class _ChunkWork {
 /// 每个分片独立用 `Range` 请求下载，通过 `RandomAccessFile.setPosition` 写入
 /// 对应偏移。支持自适应分片、暂停/恢复、智能重试。
 class ChunkedDownloader {
-  ChunkedDownloader({http.Client? client})
-      : _client = client ?? _createDefaultClient();
+  ChunkedDownloader({http.Client? client, String? proxyUrl})
+      : _client = client ?? _createDefaultClient(proxyUrl: proxyUrl);
 
-  static http.Client _createDefaultClient() {
+  static http.Client _createDefaultClient({String? proxyUrl}) {
     final httpClient = HttpClient()
       ..autoUncompress = false
       ..userAgent =
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+    final resolvedProxy = proxyUrl?.trim().isNotEmpty == true
+        ? proxyUrl!.trim()
+        : _envProxy();
+    if (resolvedProxy != null && resolvedProxy.isNotEmpty) {
+      final proxyUri = _parseProxyUri(resolvedProxy);
+      if (proxyUri != null && proxyUri.host.isNotEmpty) {
+        final port = proxyUri.hasPort ? proxyUri.port : 80;
+        httpClient.findProxy = (_) => 'PROXY ${proxyUri.host}:$port';
+      }
+    }
+
     return IOClient(httpClient);
+  }
+
+  static String? _envProxy() {
+    const keys = [
+      'HTTPS_PROXY',
+      'https_proxy',
+      'HTTP_PROXY',
+      'http_proxy',
+      'ALL_PROXY',
+      'all_proxy',
+    ];
+    for (final key in keys) {
+      final value = Platform.environment[key];
+      if (value != null && value.trim().isNotEmpty) return value.trim();
+    }
+    return null;
+  }
+
+  static Uri? _parseProxyUri(String raw) {
+    try {
+      if (raw.contains('://')) return Uri.parse(raw);
+      return Uri.parse('http://$raw');
+    } catch (_) {
+      return null;
+    }
   }
 
   final http.Client _client;
