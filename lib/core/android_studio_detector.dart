@@ -32,6 +32,7 @@ class AndroidStudioDetector {
 
     final extraArgs = [
       '-Json',
+      '-Progress',
       if (deepScan) '-DeepScan',
     ];
 
@@ -51,13 +52,7 @@ class AndroidStudioDetector {
   AndroidStudioDetectionResult _parseOutput(PowerShellResult result) {
     // 优先用 @@RESULT|@@ 标记提取的 JSON
     if (result.jsonResult != null) {
-      final installs = _parseInstalls(result.jsonResult);
-      final selected = _selectDefaultInstall(installs);
-      return AndroidStudioDetectionResult(
-        installs: installs,
-        selected: selected?.$1,
-        selectionReason: selected?.$2,
-      );
+      return _parseDecoded(result.jsonResult);
     }
 
     // 回退：从 stdout 中提取 JSON
@@ -85,10 +80,38 @@ class AndroidStudioDetector {
       return const AndroidStudioDetectionResult(installs: []);
     }
 
-    final decoded = jsonDecode(jsonText);
+    return _parseDecoded(jsonDecode(jsonText));
+  }
+
+  AndroidStudioDetectionResult _parseDecoded(Object? decoded) {
+    // 新格式：{ installs: [], residues: [] }
+    if (decoded is Map<String, dynamic>) {
+      if (decoded.containsKey('installs') || decoded.containsKey('residues')) {
+        final installs = _parseInstalls(decoded['installs']);
+        final residues = _parseResidues(decoded['residues']);
+        final selected = _selectDefaultInstall(installs);
+        return AndroidStudioDetectionResult(
+          installs: installs,
+          residues: residues,
+          selected: selected?.$1,
+          selectionReason: selected?.$2,
+        );
+      }
+
+      // 兼容：单条 install 对象
+      final install = AndroidStudioInstall.fromJson(decoded);
+      final installs = install.isValid ? [install] : <AndroidStudioInstall>[];
+      final selected = _selectDefaultInstall(installs);
+      return AndroidStudioDetectionResult(
+        installs: installs,
+        selected: selected?.$1,
+        selectionReason: selected?.$2,
+      );
+    }
+
+    // 兼容旧格式：纯 installs 数组
     final installs = _parseInstalls(decoded);
     final selected = _selectDefaultInstall(installs);
-
     return AndroidStudioDetectionResult(
       installs: installs,
       selected: selected?.$1,
@@ -111,6 +134,14 @@ class AndroidStudioDetector {
     }
 
     return [];
+  }
+
+  List<AndroidStudioResidue> _parseResidues(Object? decoded) {
+    if (decoded is! List) return const [];
+    return decoded
+        .whereType<Map<String, dynamic>>()
+        .map(AndroidStudioResidue.fromJson)
+        .toList();
   }
 
   (AndroidStudioInstall, AndroidStudioSelectionReason)? _selectDefaultInstall(

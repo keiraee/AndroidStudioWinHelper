@@ -16,7 +16,9 @@ Future<int> runDetectAndroidStudioCommand(List<String> args) async {
     if (jsonOutput) {
       final payload = {
         'count': result.installs.length,
+        'residueCount': result.residues.length,
         'installs': result.installs.map((item) => item.toJson()).toList(),
+        'residues': result.residues.map((item) => item.toJson()).toList(),
         if (result.selected != null) 'selected': result.selected!.toJson(),
         if (result.selectionReason != null)
           'selectionReason': result.selectionReason!.name,
@@ -26,7 +28,7 @@ Future<int> runDetectAndroidStudioCommand(List<String> args) async {
       _printHumanReadable(result);
     }
 
-    return result.hasInstalls ? 0 : 1;
+    return (result.hasInstalls || result.hasResidues) ? 0 : 1;
   } catch (error) {
     stderr.writeln('检测失败：$error');
     return 2;
@@ -34,30 +36,51 @@ Future<int> runDetectAndroidStudioCommand(List<String> args) async {
 }
 
 void _printHumanReadable(AndroidStudioDetectionResult result) {
-  if (!result.hasInstalls) {
-    stdout.writeln('未检测到 Android Studio 安装。');
+  if (!result.hasInstalls && !result.hasResidues) {
+    stdout.writeln('未检测到 Android Studio 安装或卸载残留。');
     return;
   }
 
-  stdout.writeln('共检测到 ${result.installs.length} 个安装：');
-  stdout.writeln('');
+  if (result.hasInstalls) {
+    stdout.writeln('共检测到 ${result.installs.length} 个安装：');
+    stdout.writeln('');
 
-  for (var i = 0; i < result.installs.length; i++) {
-    final install = result.installs[i];
-    stdout.writeln('[${i + 1}]');
-    stdout.writeln('安装路径：${install.path}');
-    stdout.writeln('可执行文件：${install.executable}');
-    stdout.writeln('名称：${install.name}');
-    stdout.writeln('版本：${install.version}');
-    stdout.writeln('构建号：${install.build}');
-    stdout.writeln('渠道：${install.channel}');
-    stdout.writeln('检测来源：${install.source}');
+    for (var i = 0; i < result.installs.length; i++) {
+      final install = result.installs[i];
+      stdout.writeln('[${i + 1}]');
+      stdout.writeln('安装路径：${install.path}');
+      stdout.writeln('可执行文件：${install.executable}');
+      stdout.writeln('名称：${install.name}');
+      stdout.writeln('版本：${install.version}');
+      stdout.writeln('构建号：${install.build}');
+      stdout.writeln('渠道：${install.channel}');
+      stdout.writeln('检测来源：${install.source}');
+      stdout.writeln('');
+    }
+
+    if (result.selected != null) {
+      stdout.writeln('推荐默认安装：${result.selected!.path}');
+      stdout.writeln('选择原因：${_reasonLabel(result.selectionReason)}');
+      stdout.writeln('');
+    }
+  } else {
+    stdout.writeln('未检测到有效 Android Studio 安装。');
     stdout.writeln('');
   }
 
-  if (result.selected != null) {
-    stdout.writeln('推荐默认安装：${result.selected!.path}');
-    stdout.writeln('选择原因：${_reasonLabel(result.selectionReason)}');
+  if (result.hasResidues) {
+    stdout.writeln('发现 ${result.residues.length} 处卸载残留：');
+    stdout.writeln('');
+    for (var i = 0; i < result.residues.length; i++) {
+      final residue = result.residues[i];
+      stdout.writeln('[残留 ${i + 1}]');
+      stdout.writeln('名称：${residue.name}');
+      stdout.writeln('路径：${residue.path}');
+      stdout.writeln('注册表：${residue.registryKey}');
+      stdout.writeln('版本：${residue.version}');
+      stdout.writeln('原因：${residue.reason}');
+      stdout.writeln('');
+    }
   }
 }
 
