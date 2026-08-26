@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:androidstudiowinhelper/core/android_studio_detector.dart';
 import 'package:androidstudiowinhelper/core/models/android_studio_install.dart';
@@ -57,6 +58,16 @@ class _InstallTabState extends State<InstallTab> {
 
   @override
   Widget build(BuildContext context) {
+    final installCount = _result?.installs.length ?? 0;
+    final residueCount = _result?.residues.length ?? 0;
+    String? trailing;
+    if (_result != null) {
+      final parts = <String>[];
+      if (installCount > 0) parts.add('$installCount 个安装');
+      if (residueCount > 0) parts.add('$residueCount 处残留');
+      if (parts.isNotEmpty) trailing = parts.join(' · ');
+    }
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
       child: Column(
@@ -65,9 +76,7 @@ class _InstallTabState extends State<InstallTab> {
           SectionHeader(
             icon: Icons.desktop_windows_outlined,
             title: '安装检测',
-            trailing: _result != null && _result!.hasInstalls
-                ? '${_result!.installs.length} 个安装'
-                : null,
+            trailing: trailing,
             action: ActionButton(
               label: _result != null ? '重新检测' : '开始检测',
               icon: Icons.refresh,
@@ -88,25 +97,95 @@ class _InstallTabState extends State<InstallTab> {
   Widget _buildResult() {
     if (_result == null && !_loading) {
       return const EmptyPanel(
-        hint: '点击右上角「开始检测」查找已安装的 Android Studio',
+        hint: '点击右上角「开始检测」查找已安装的 Android Studio 与卸载残留',
       );
     }
 
     if (_result == null) return const SizedBox.shrink();
 
-    if (!_result!.hasInstalls) {
-      return const EmptyPanel(hint: '未检测到 Android Studio 安装。');
+    if (!_result!.hasInstalls && !_result!.hasResidues) {
+      return const EmptyPanel(hint: '未检测到 Android Studio 安装或卸载残留。');
     }
 
     return ListView(
       children: [
-        for (var i = 0; i < _result!.installs.length; i++)
-          _InstallCard(
-            index: i + 1,
-            install: _result!.installs[i],
-            isSelected: _result!.selected == _result!.installs[i],
+        if (_result!.hasInstalls) ...[
+          _SectionLabel(
+            title: '有效安装',
+            subtitle: '本机仍可识别的 Android Studio',
+            count: _result!.installs.length,
           ),
+          for (var i = 0; i < _result!.installs.length; i++)
+            _InstallCard(
+              index: i + 1,
+              install: _result!.installs[i],
+              isSelected: identical(_result!.selected, _result!.installs[i]) ||
+                  (_result!.selected?.path == _result!.installs[i].path),
+            ),
+        ],
+        if (_result!.hasResidues) ...[
+          if (_result!.hasInstalls) const SizedBox(height: 8),
+          _SectionLabel(
+            title: '卸载残留',
+            subtitle: '安装器写入的注册表仍在，且无法解析到有效安装目录',
+            count: _result!.residues.length,
+            emphasize: true,
+          ),
+          for (var i = 0; i < _result!.residues.length; i++)
+            _ResidueCard(index: i + 1, residue: _result!.residues[i]),
+        ],
       ],
+    );
+  }
+}
+
+class _SectionLabel extends StatelessWidget {
+  const _SectionLabel({
+    required this.title,
+    required this.subtitle,
+    required this.count,
+    this.emphasize = false,
+  });
+
+  final String title;
+  final String subtitle;
+  final int count;
+  final bool emphasize;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10, top: 4),
+      child: Row(
+        children: [
+          Icon(
+            emphasize ? Icons.warning_amber_rounded : Icons.check_circle_outline,
+            size: 18,
+            color: emphasize ? colorScheme.error : colorScheme.primary,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '$title（$count）',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        color: emphasize ? colorScheme.error : null,
+                      ),
+                ),
+                Text(
+                  subtitle,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -124,7 +203,8 @@ class _InstallCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final sources = install.source.split('；').where((s) => s.trim().isNotEmpty).toList();
+    final sources =
+        install.source.split('；').where((s) => s.trim().isNotEmpty).toList();
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -149,6 +229,12 @@ class _InstallCard extends StatelessWidget {
             InfoChipRow(label: '安装路径', value: install.path),
             InfoChipRow(label: '版本', value: install.version),
             InfoChipRow(label: '构建号', value: install.build),
+            if (install.channel.isNotEmpty)
+              InfoChipRow(label: '渠道', value: install.channel),
+            if (install.dataDirectoryName.isNotEmpty)
+              InfoChipRow(label: '数据目录', value: install.dataDirectoryName),
+            if (install.sdkPath.isNotEmpty)
+              InfoChipRow(label: 'SDK 路径', value: install.sdkPath),
             if (sources.isNotEmpty) ...[
               const SizedBox(height: 8),
               Text(
@@ -161,7 +247,92 @@ class _InstallCard extends StatelessWidget {
               Wrap(
                 spacing: 6,
                 runSpacing: 4,
-                children: sources.map((source) => _SourceChip(label: source.trim())).toList(),
+                children: sources
+                    .map((source) => _SourceChip(label: source.trim()))
+                    .toList(),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ResidueCard extends StatelessWidget {
+  const _ResidueCard({
+    required this.index,
+    required this.residue,
+  });
+
+  final int index;
+  final AndroidStudioResidue residue;
+
+  Future<void> _copy(String value) async {
+    if (value.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: value));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      color: colorScheme.errorContainer.withValues(alpha: 0.25),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.delete_forever_outlined,
+                    size: 18, color: colorScheme.error),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '[$index] ${residue.name}',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          color: colorScheme.error,
+                        ),
+                  ),
+                ),
+                Text(
+                  '注册表残留',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: colorScheme.error,
+                      ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              residue.reason,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 10),
+            if (residue.path.isNotEmpty)
+              InfoChipRow(label: '原安装路径', value: residue.path),
+            if (residue.version.isNotEmpty)
+              InfoChipRow(label: '登记版本', value: residue.version),
+            if (residue.registryKey.isNotEmpty) ...[
+              InfoChipRow(label: '注册表键', value: residue.registryKey),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: () async {
+                    await _copy(residue.registryKey);
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('已复制注册表路径')),
+                    );
+                  },
+                  icon: const Icon(Icons.copy, size: 16),
+                  label: const Text('复制注册表路径'),
+                ),
               ),
             ],
           ],
