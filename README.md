@@ -14,7 +14,7 @@
 | 模块 | 说明 | 亮点 |
 |------|------|------|
 | **安装检测** | 多源枚举所有已安装的 Android Studio | 6 种检测源，自动选出最佳候选 |
-| **磁盘占用** | 递归扫描 SDK / Gradle / AVD / IDE 缓存 | 子目录展开，一键打开文件夹 |
+| **磁盘占用** | 只统计实际存在的 SDK / Gradle / AVD / IDE 目录 | 无痕迹则空白引导；合计扣除嵌套重复 |
 | **版本下载** | 抓取官方版本源 + CDN 探测 | 多线程分片下载，智能重试，断点续传 |
 | **环境配置** | 检测/修改 ANDROID_HOME、JAVA_HOME 等 | UAC 提权写入，一键回退 |
 | **Hyper-V 管理** | 检测/启用/关闭 Hyper-V 和 WHPX | 重启提醒，状态实时刷新 |
@@ -42,17 +42,16 @@
 
 ### 2. 磁盘占用扫描
 
-递归扫描 Android 开发相关目录，展示占用空间和子目录明细：
+只统计本机**实际存在**的 Android 开发目录，不把默认路径登记成空条目。无安装且无残留时显示空白引导。
 
 | 类别 | 扫描内容 |
 |------|----------|
-| SDK | `ANDROID_HOME` / `ANDROID_SDK_ROOT` |
-| Gradle | `~/.gradle/caches` / wrapper |
-| AVD | 模拟器镜像 |
-| IDE 配置 | `AndroidStudio*` config/system 目录 |
-| 缓存 | `AppData\Local\Temp\*` |
+| IDE 配置 / 缓存 / 日志 | `%APPDATA%` / `%LOCALAPPDATA%\Google\AndroidStudio*`（日志计入缓存合计，卡片单独列出） |
+| SDK | 环境变量、安装检测得到的 `sdkPath`、默认 `%LOCALAPPDATA%\Android\Sdk`（仅目录存在时） |
+| Gradle | `~\.gradle`（存在才收录） |
+| AVD | `~\.android`；若设置了 `ANDROID_AVD_HOME` 且不是默认 `avd` 目录则单独列出 |
 
-子目录支持快捷复制路径、一键打开文件夹。
+子目录支持快捷复制路径、一键打开文件夹。环境变量激活的 SDK 显示对应标签；无法关联到当前安装的配置标为残留。
 
 ### 3. 版本下载
 

@@ -3,10 +3,12 @@ import 'dart:io';
 
 import 'package:androidstudiowinhelper/core/download/chunk_state.dart';
 import 'package:androidstudiowinhelper/core/download/chunked_downloader.dart';
+import 'package:androidstudiowinhelper/core/download/download_shelf.dart';
 import 'package:androidstudiowinhelper/core/download/meta_store.dart';
 import 'package:androidstudiowinhelper/core/file_utils.dart';
 import 'package:androidstudiowinhelper/core/format_utils.dart';
 import 'package:androidstudiowinhelper/core/log_manager.dart';
+import 'package:androidstudiowinhelper/core/models/studio_version.dart';
 import 'package:flutter/foundation.dart';
 
 import 'models/download_task.dart';
@@ -24,150 +26,169 @@ class DownloadManager extends ChangeNotifier {
 
   DownloadTask? taskFor(String versionKey) => _tasks[versionKey];
 
+  Iterable<DownloadTask> get inProgressTasks => _tasks.values.where(
+        (t) =>
+            t.state == DownloadState.downloading ||
+            t.state == DownloadState.paused ||
+            t.state == DownloadState.connecting ||
+            t.state == DownloadState.error,
+      );
+
+  Iterable<DownloadTask> get completedTasks => _tasks.values.where(
+        (t) => t.state == DownloadState.completed,
+      );
+
   // ── 路径工具 ──
 
-  static String getDownloadsDir() {
-    final localAppData = Platform.environment['LOCALAPPDATA'] ?? '';
-    final dir = Directory(
-      '$localAppData\\AndroidStudioWinHelper\\downloads',
-    );
+  String? _downloadsDir;
+
+  String? get downloadsDir => _downloadsDir;
+
+  void useDownloadsDir(String path) {
+    final dir = Directory(path);
     if (!dir.existsSync()) {
       dir.createSync(recursive: true);
     }
-    return dir.path;
+    _downloadsDir = dir.path;
   }
 
-  static String fileNameFromUrl(String url) {
-    final uri = Uri.parse(url);
-    if (uri.pathSegments.isEmpty) return url.split('/').last;
-    return uri.pathSegments.last;
+  String _requireDownloadsDir() {
+    final dir = _downloadsDir;
+    if (dir == null || dir.isEmpty) {
+      throw StateError('未配置下载文件夹');
+    }
+    return dir;
   }
+
+  static String fileNameFromUrl(String url) =>
+      DownloadShelf.fileNameFromUrl(url);
+
+  static String generateFileName(String versionKey, String url) =>
+      DownloadShelf.generateFileName(versionKey, url);
 
   // ── 启动时恢复已有的下载 ──
 
-  Future<void> recoverCompleted(
-    List<String> knownVersionKeys,
-    String Function(String) urlForKey,
-  ) async {
-    LogManager.instance.write('Download', '===== 恢复已有的下载任务 =====');
-    final dir = Directory(getDownloadsDir());
+  Future<void> recoverFromDisk([
+    List<StudioVersion> versions = const [],
+  ]) async {
+    LogManager.instance.write('Download', '===== 恢复本地下载目录 =====');
+    final downloadsDir = _downloadsDir;
+    if (downloadsDir == null || downloadsDir.isEmpty) {
+      _tasks.removeWhere((k, _) => !_downloaders.containsKey(k));
+      LogManager.instance.write('Download', '未配置下载文件夹，跳过恢复');
+      if (!_disposed) notifyListeners();
+      return;
+    }
+
+    _tasks.removeWhere((k, _) => !_downloaders.containsKey(k));
+    final dir = Directory(downloadsDir);
     if (!dir.existsSync()) {
       LogManager.instance.write('Download', '下载目录不存在，跳过恢复');
       return;
     }
 
     final files = dir.listSync().whereType<File>().toList();
-    LogManager.instance.write('Download', '下载目录: ${dir.path}, 文件数: ${files.length}');
+    LogManager.instance.write(
+      'Download',
+      '下载目录: ${dir.path}, 文件数: ${files.length}',
+    );
 
-    // 恢复已完成的 .exe 文件
-    int recoveredComplete = 0;
+    var recoveredComplete = 0;
+    var recoveredPaused = 0;
+
     for (final file in files) {
-      if (!file.path.endsWith('.exe') || file.path.endsWith('.part')) continue;
-      for (final vk in knownVersionKeys) {
-        final expectedName = fileNameFromUrl(urlForKey(vk));
-        if (file.path.endsWith(expectedName)) {
-          _tasks[vk] = DownloadTask(
-            versionKey: vk,
-            url: urlForKey(vk),
-            fileName: expectedName,
+      final name = file.uri.pathSegments.isEmpty
+          ? file.path.split(Platform.pathSeparator).last
+          : file.uri.pathSegments.last;
+
+      if (DownloadShelf.isCompletedExe(name)) {
+        if (_occupiedByActiveDownload(name)) continue;
+        final key = DownloadShelf.matchVersionKey(
+              fileName: name,
+              versions: versions,
+            ) ??
+            name;
+        if (_downloaders.containsKey(key)) continue;
+        final size = file.lengthSync();
+        _putRecovered(
+          key,
+          DownloadTask(
+            versionKey: key,
+            url: _urlFor(key, versions),
+            fileName: name,
             filePath: file.path,
             state: DownloadState.completed,
-            totalBytes: file.lengthSync(),
-            downloadedBytes: file.lengthSync(),
-          );
-          LogManager.instance.write('Download',
-              '恢复已完成: $vk -> ${file.path} (${(file.lengthSync() / 1024 / 1024).toStringAsFixed(1)}MB)');
-          recoveredComplete++;
-          break;
-        }
+            totalBytes: size,
+            downloadedBytes: size,
+          ),
+        );
+        recoveredComplete++;
+        continue;
       }
+
+      if (!DownloadShelf.isPartFile(name)) continue;
+
+      final exeName = DownloadShelf.exeNameFromPart(name);
+      if (_occupiedByActiveDownload(exeName)) continue;
+      final key = DownloadShelf.matchVersionKey(
+            fileName: exeName,
+            versions: versions,
+          ) ??
+          exeName;
+      if (_downloaders.containsKey(key)) continue;
+
+      final meta = await MetaStore.load(file.path);
+      final downloadedBytes = meta?.downloadedBytes ?? file.lengthSync();
+      _putRecovered(
+        key,
+        DownloadTask(
+          versionKey: key,
+          url: meta?.url ?? _urlFor(key, versions),
+          fileName: exeName,
+          filePath: file.path,
+          state: DownloadState.paused,
+          totalBytes: meta?.totalBytes ?? 0,
+          downloadedBytes: downloadedBytes,
+        ),
+      );
+      recoveredPaused++;
     }
 
-    // 恢复未完成的 .part 文件（可续传）
-    int recoveredPaused = 0;
-    for (final file in files) {
-      if (!file.path.endsWith('.part') || file.path.endsWith('.part.meta')) continue;
-      for (final vk in knownVersionKeys) {
-        final expectedName = fileNameFromUrl(urlForKey(vk));
-        if (file.path.endsWith('$expectedName.part')) {
-          // 检查 .part.meta 是否存在以获取准确的已下载字节数
-          final meta = await MetaStore.load(file.path);
-          int downloadedBytes;
-          if (meta != null) {
-            downloadedBytes = meta.downloadedBytes;
-            LogManager.instance.write('Download',
-                '找到 .part.meta: $vk (${meta.chunkCount} 分片, '
-                '已下载 ${(downloadedBytes / 1024 / 1024).toStringAsFixed(1)}MB)');
-          } else {
-            downloadedBytes = file.lengthSync();
-          }
-
-          _tasks[vk] = DownloadTask(
-            versionKey: vk,
-            url: urlForKey(vk),
-            fileName: expectedName,
-            filePath: file.path,
-            state: DownloadState.paused,
-            downloadedBytes: downloadedBytes,
-          );
-          LogManager.instance.write('Download',
-              '恢复可续传: $vk -> ${file.path} (已下载 ${(downloadedBytes / 1024 / 1024).toStringAsFixed(1)}MB)');
-          recoveredPaused++;
-          break;
-        }
-      }
-    }
-
-    LogManager.instance.write('Download',
-        '恢复完成: $recoveredComplete 个已完成, $recoveredPaused 个可续传');
+    LogManager.instance.write(
+      'Download',
+      '恢复完成: $recoveredComplete 个已完成, $recoveredPaused 个可续传',
+    );
     if (!_disposed) notifyListeners();
   }
 
-  // ── 文件名生成 ──
-
-  /// 从版本显示名生成文件名，如：
-  /// "Quail 2 | 2026.1.2 Nightly 2026-06-04" → "android-studio-quail2-nightly-2026-06-04-windows.exe"
-  /// "Panda 4 | 2025.3.4 Patch 1" → "android-studio-panda4-patch1-windows.exe"
-  /// "Quail 2 | 2026.1.2 Canary 4" → "android-studio-quail2-canary4-windows.exe"
-  /// "Panda 4 | 2025.3.4" → "android-studio-panda4-windows.exe"
-  static String generateFileName(String versionKey, String url) {
-    // 从 URL 提取扩展名
-    final urlFileName = fileNameFromUrl(url);
-    final ext = urlFileName.contains('.') ? '.${urlFileName.split('.').last}' : '.exe';
-
-    // 解析版本名: "Codename | Version Channel"
-    final parts = versionKey.split('|');
-    final codename = (parts.isNotEmpty ? parts.first : versionKey).trim();
-    final versionPart = parts.length > 1 ? parts[1].trim() : '';
-
-    // codename 转安全文件名: "Quail 2" → "quail2", "Panda 4" → "panda4"
-    final safeCodename = codename.toLowerCase().replaceAll(RegExp(r'\s+'), '');
-
-    // 从 versionPart 提取 channel 标识
-    // 如 "2026.1.2 Nightly 2026-06-04" → "nightly-2026-06-04"
-    // 如 "2025.3.4 Patch 1" → "patch1"
-    // 如 "2026.1.2 Canary 4" → "canary4"
-    // 如 "2025.3.4" → "" (stable)
-    String channelSuffix = '';
-
-    // 移除版本号部分 (如 "2026.1.2", "2025.3.4")
-    final withoutVersion = versionPart.replaceFirst(RegExp(r'^[\d.]+\s*'), '').trim();
-
-    if (withoutVersion.isNotEmpty) {
-      // "Nightly 2026-06-04" → "nightly-2026-06-04"
-      // "Canary 4" → "canary4"
-      // "Patch 1" → "patch1"
-      // "RC 2" → "rc2"
-      final normalized = withoutVersion.toLowerCase().replaceAll(RegExp(r'\s+'), '-');
-      // 只把 "word-N"（单词后跟连字符和单个数字）的连字符去掉
-      // 保留 "2026-06-04" 这种日期格式的连字符
-      channelSuffix = '-${normalized.replaceAllMapped(RegExp(r'\b(\w+)-(\d)\b'), (m) => '${m.group(1)}${m.group(2)}')}';
-    }
-
-    return 'android-studio-$safeCodename$channelSuffix$ext';
+  bool _occupiedByActiveDownload(String fileName) {
+    return _downloaders.keys.any((key) {
+      final task = _tasks[key];
+      return task != null &&
+          (task.fileName == fileName ||
+              task.filePath.endsWith(fileName) ||
+              task.filePath.endsWith('$fileName.part'));
+    });
   }
 
-  // ── 开始/续传下载 ──
+  String _urlFor(String key, List<StudioVersion> versions) {
+    for (final v in versions) {
+      if (v.version == key) return v.downloadUrl;
+    }
+    return '';
+  }
+
+  void _putRecovered(String key, DownloadTask task) {
+    _tasks.removeWhere(
+      (k, t) =>
+          k != key &&
+          !_downloaders.containsKey(k) &&
+          t.filePath == task.filePath,
+    );
+    _tasks[key] = task;
+  }
+
+  // ── 文件名生成（兼容旧调用） ──
 
   Future<void> start(
     String versionKey,
@@ -175,6 +196,11 @@ class DownloadManager extends ChangeNotifier {
     String? proxyUrl,
     String? expectedSha256,
   }) async {
+    if (url.isEmpty) {
+      LogManager.instance.write('Download', '[$versionKey] 缺少下载 URL，跳过');
+      return;
+    }
+
     if (_downloaders.containsKey(versionKey)) {
       LogManager.instance.write('Download', '[$versionKey] 已在下载中，跳过');
       return;
@@ -184,8 +210,11 @@ class DownloadManager extends ChangeNotifier {
     LogManager.instance.write('Download', '版本: $versionKey');
     LogManager.instance.write('Download', 'URL: $url');
 
-    final dir = getDownloadsDir();
-    final fileName = generateFileName(versionKey, url);
+    final dir = _requireDownloadsDir();
+    final existing = _tasks[versionKey];
+    final fileName = (existing != null && existing.fileName.isNotEmpty)
+        ? existing.fileName
+        : generateFileName(versionKey, url);
     final partPath = '$dir\\$fileName.part';
     final finalPath = '$dir\\$fileName';
     LogManager.instance.write('Download', '文件名: $fileName');
@@ -456,7 +485,7 @@ class DownloadManager extends ChangeNotifier {
     final partPath = task.filePath.endsWith('.part')
         ? task.filePath
         : (task.fileName.isNotEmpty
-            ? '${getDownloadsDir()}\\${task.fileName}.part'
+            ? '${_requireDownloadsDir()}\\${task.fileName}.part'
             : null);
     if (partPath == null || partPath.isEmpty) return;
 
@@ -478,6 +507,20 @@ class DownloadManager extends ChangeNotifier {
     final task = _tasks[versionKey];
     if (task == null || task.state != DownloadState.completed) return;
     await Process.start('explorer', ['/select,', task.filePath]);
+  }
+
+  Future<void> runInstaller(String versionKey) async {
+    final task = _tasks[versionKey];
+    if (task == null || task.state != DownloadState.completed) return;
+    LogManager.instance.write(
+      'Download',
+      '[$versionKey] 启动安装程序: ${task.filePath}',
+    );
+    await Process.start(
+      task.filePath,
+      const [],
+      mode: ProcessStartMode.detached,
+    );
   }
 
   void _updateTask(String key, DownloadTask task) {

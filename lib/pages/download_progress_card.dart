@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:androidstudiowinhelper/core/format_utils.dart';
 import 'package:androidstudiowinhelper/core/models/download_task.dart';
 
-enum DownloadAction { start, pause, resume, cancel, open }
+enum DownloadAction { start, pause, resume, cancel, open, install, copy }
 
 class DownloadProgressCard extends StatelessWidget {
   const DownloadProgressCard({
@@ -11,11 +11,13 @@ class DownloadProgressCard extends StatelessWidget {
     required this.task,
     required this.onAction,
     this.hasUrl = true,
+    this.showCopyLink = false,
   });
 
   final DownloadTask? task;
   final void Function(DownloadAction action) onAction;
   final bool hasUrl;
+  final bool showCopyLink;
 
   @override
   Widget build(BuildContext context) {
@@ -36,10 +38,26 @@ class DownloadProgressCard extends StatelessWidget {
   }
 
   Widget _buildIdleButton(BuildContext context) {
-    return FilledButton.icon(
-      onPressed: () => onAction(DownloadAction.start),
-      icon: const Icon(Icons.download, size: 18),
-      label: const Text('下载安装包'),
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        FilledButton.icon(
+          onPressed: () => onAction(DownloadAction.start),
+          icon: const Icon(Icons.download, size: 18),
+          label: const Text('下载安装包'),
+        ),
+        if (showCopyLink)
+          OutlinedButton.icon(
+            onPressed: () => onAction(DownloadAction.copy),
+            icon: const Icon(Icons.copy, size: 16),
+            label: const Text('复制下载链接'),
+            style: OutlinedButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+            ),
+          ),
+      ],
     );
   }
 
@@ -216,10 +234,12 @@ class DownloadProgressCard extends StatelessWidget {
   }
 
   Widget _buildCompleted(BuildContext context, ColorScheme colorScheme) {
-    return Row(
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
         Icon(Icons.check_circle, size: 18, color: Colors.green),
-        const SizedBox(width: 8),
         Text(
           '下载完成',
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -227,7 +247,14 @@ class DownloadProgressCard extends StatelessWidget {
                 fontWeight: FontWeight.w600,
               ),
         ),
-        const SizedBox(width: 12),
+        FilledButton.icon(
+          onPressed: () => onAction(DownloadAction.install),
+          icon: const Icon(Icons.play_arrow, size: 16),
+          label: const Text('运行安装程序'),
+          style: FilledButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+          ),
+        ),
         OutlinedButton.icon(
           onPressed: () => onAction(DownloadAction.open),
           icon: const Icon(Icons.folder_open, size: 16),
@@ -310,6 +337,17 @@ class DownloadProgressCard extends StatelessWidget {
                 visualDensity: VisualDensity.compact,
               ),
             ),
+            if (showCopyLink) ...[
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: () => onAction(DownloadAction.copy),
+                icon: const Icon(Icons.copy, size: 16),
+                label: const Text('复制下载链接'),
+                style: OutlinedButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ],
             const SizedBox(width: 8),
             TextButton(
               onPressed: () => onAction(DownloadAction.cancel),

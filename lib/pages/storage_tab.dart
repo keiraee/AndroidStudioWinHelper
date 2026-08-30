@@ -9,7 +9,9 @@ import 'package:androidstudiowinhelper/core/scan_cache.dart';
 import 'package:androidstudiowinhelper/pages/shared_widgets.dart';
 
 class StorageTab extends StatefulWidget {
-  const StorageTab({super.key});
+  const StorageTab({super.key, this.onNavigateTab});
+
+  final void Function(String tabId)? onNavigateTab;
 
   @override
   State<StorageTab> createState() => _StorageTabState();
@@ -61,6 +63,17 @@ class _StorageTabState extends State<StorageTab> {
 
   @override
   Widget build(BuildContext context) {
+    String? trailing;
+    if (_result != null) {
+      final parts = <String>[
+        '${_result!.foundCount} 项目',
+        _result!.totalSizeHuman,
+      ];
+      final scanned = _formatScannedAt(_result!.scannedAt);
+      if (scanned != null) parts.add(scanned);
+      trailing = parts.join(' · ');
+    }
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
       child: Column(
@@ -69,9 +82,7 @@ class _StorageTabState extends State<StorageTab> {
           SectionHeader(
             icon: Icons.pie_chart_outline,
             title: '目录占用报告',
-            trailing: _result != null
-                ? '${_result!.foundCount} 项目 · ${_result!.totalSizeHuman}'
-                : null,
+            trailing: trailing,
             action: ActionButton(
               label: _hasCache ? '重新扫描' : '开始扫描',
               icon: Icons.refresh,
@@ -98,25 +109,35 @@ class _StorageTabState extends State<StorageTab> {
 
     if (_result == null) return const SizedBox.shrink();
 
-    if (_result!.entries.isEmpty) {
-      return const EmptyPanel(hint: '未找到相关目录。');
-    }
-
     final visibleEntries = _result!.sortedEntries
-        .where((e) => Directory(e.path).existsSync())
+        .where((e) => e.path.isNotEmpty && Directory(e.path).existsSync())
         .toList();
 
     if (visibleEntries.isEmpty) {
-      return const EmptyPanel(hint: '未找到相关目录。');
+      return EmptyPanel(
+        title: '还没有安装？',
+        hint: '本机没有可统计的 Android 开发目录',
+        actionLabel: '去安装',
+        actionIcon: Icons.download_outlined,
+        onAction: () => widget.onNavigateTab?.call('download'),
+      );
     }
 
     return ListView(
       children: [
-        for (final entry in visibleEntries)
-          _StorageEntryTile(entry: entry),
+        for (final entry in visibleEntries) _StorageEntryTile(entry: entry),
       ],
     );
   }
+}
+
+String? _formatScannedAt(String scannedAt) {
+  if (scannedAt.isEmpty) return null;
+  final parsed = DateTime.tryParse(scannedAt);
+  if (parsed == null) return null;
+  final local = parsed.toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${two(local.month)}-${two(local.day)} ${two(local.hour)}:${two(local.minute)}';
 }
 
 class _StorageEntryTile extends StatelessWidget {
@@ -141,6 +162,23 @@ class _StorageEntryTile extends StatelessWidget {
             Flexible(
               child: Text(entry.label, style: textTheme.titleSmall),
             ),
+            if (entry.isOrphan) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: colorScheme.errorContainer,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  '残留',
+                  style: textTheme.labelSmall?.copyWith(
+                    color: colorScheme.onErrorContainer,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
             if (entry.isActive && entry.activeSource.isNotEmpty) ...[
               const SizedBox(width: 8),
               Container(
@@ -218,8 +256,11 @@ class _StorageEntryTile extends StatelessWidget {
                           ),
                           SizedBox(
                             width: _actionWidth,
-                            child: sub.path.isNotEmpty && Directory(sub.path).existsSync()
-                                ? FolderButton(onTap: () => openInExplorer(sub.path))
+                            child: sub.path.isNotEmpty &&
+                                    Directory(sub.path).existsSync()
+                                ? FolderButton(
+                                    onTap: () => openInExplorer(sub.path),
+                                  )
                                 : null,
                           ),
                         ],

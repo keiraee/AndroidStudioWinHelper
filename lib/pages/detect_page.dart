@@ -29,6 +29,7 @@ class DetectPage extends StatefulWidget {
 
 class _DetectPageState extends State<DetectPage> {
   _PageTab _activeTab = _PageTab.install;
+  final Set<_PageTab> _visited = {_PageTab.install};
 
   // 启动快速诊断
   Map<String, DiagnosticStatus> _diagStatuses = {};
@@ -74,10 +75,17 @@ class _DetectPageState extends State<DetectPage> {
     }
   }
 
+  void _selectTab(_PageTab tab) {
+    setState(() {
+      _activeTab = tab;
+      _visited.add(tab);
+    });
+  }
+
   /// 从 tabId 字符串映射到 _PageTab 枚举
   void _navigateToTab(String tabId) {
     final tab = _tabIdToIndex(tabId);
-    if (tab != null) setState(() => _activeTab = tab);
+    if (tab != null) _selectTab(tab);
   }
 
   static _PageTab? _tabIdToIndex(String tabId) {
@@ -123,8 +131,7 @@ class _DetectPageState extends State<DetectPage> {
               child: Center(
                 child: InkWell(
                   borderRadius: BorderRadius.circular(8),
-                  onTap: () =>
-                      setState(() => _activeTab = _PageTab.diagnostics),
+                  onTap: () => _selectTab(_PageTab.diagnostics),
                   child: Container(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -222,7 +229,7 @@ class _DetectPageState extends State<DetectPage> {
                               title: '安装检测',
                               subtitle: '查找 Android Studio 安装位置与版本',
                               selected: _activeTab == _PageTab.install,
-                              onTap: () => setState(() => _activeTab = _PageTab.install),
+                              onTap: () => _selectTab(_PageTab.install),
                             ),
                             const SizedBox(height: 12),
                             _TabTile(
@@ -230,7 +237,7 @@ class _DetectPageState extends State<DetectPage> {
                               title: '磁盘占用体检',
                               subtitle: '统计配置、缓存、日志、SDK 目录大小',
                               selected: _activeTab == _PageTab.storage,
-                              onTap: () => setState(() => _activeTab = _PageTab.storage),
+                              onTap: () => _selectTab(_PageTab.storage),
                             ),
                             const SizedBox(height: 12),
                             _TabTile(
@@ -238,7 +245,7 @@ class _DetectPageState extends State<DetectPage> {
                               title: '版本下载',
                               subtitle: '获取 Android Studio 最新版本安装包',
                               selected: _activeTab == _PageTab.download,
-                              onTap: () => setState(() => _activeTab = _PageTab.download),
+                              onTap: () => _selectTab(_PageTab.download),
                             ),
                             const SizedBox(height: 12),
                             _TabTile(
@@ -246,7 +253,7 @@ class _DetectPageState extends State<DetectPage> {
                               title: '环境配置',
                               subtitle: '检测并配置 ANDROID_HOME、GRADLE_HOME 等环境变量',
                               selected: _activeTab == _PageTab.envConfig,
-                              onTap: () => setState(() => _activeTab = _PageTab.envConfig),
+                              onTap: () => _selectTab(_PageTab.envConfig),
                             ),
                             const SizedBox(height: 12),
                             _TabTile(
@@ -254,7 +261,7 @@ class _DetectPageState extends State<DetectPage> {
                               title: '模拟器运行环境',
                               subtitle: 'Hyper-V/WHPX 管理 · 硬件/虚拟化/软件环境全面诊断',
                               selected: _activeTab == _PageTab.hyperV,
-                              onTap: () => setState(() => _activeTab = _PageTab.hyperV),
+                              onTap: () => _selectTab(_PageTab.hyperV),
                             ),
                             const SizedBox(height: 12),
                             _TabTile(
@@ -262,7 +269,7 @@ class _DetectPageState extends State<DetectPage> {
                               title: 'SDK 一键安装',
                               subtitle: '自动配置 Android SDK 核心组件（无需安装 Android Studio）',
                               selected: _activeTab == _PageTab.sdkSetup,
-                              onTap: () => setState(() => _activeTab = _PageTab.sdkSetup),
+                              onTap: () => _selectTab(_PageTab.sdkSetup),
                             ),
                             const SizedBox(height: 12),
                             _TabTile(
@@ -277,8 +284,7 @@ class _DetectPageState extends State<DetectPage> {
                               badge: _hasDiagIssues
                                   ? _diagErrorCount + _diagWarningCount
                                   : null,
-                              onTap: () =>
-                                  setState(() => _activeTab = _PageTab.diagnostics),
+                              onTap: () => _selectTab(_PageTab.diagnostics),
                             ),
                           ],
                         ),
@@ -290,18 +296,40 @@ class _DetectPageState extends State<DetectPage> {
             ),
           ),
           Expanded(
-            child: switch (_activeTab) {
-              _PageTab.install => InstallTab(onNavigateTab: _navigateToTab),
-              _PageTab.storage => const StorageTab(),
-              _PageTab.download => const DownloadTab(),
-              _PageTab.envConfig => const EnvConfigTab(),
-              _PageTab.hyperV => const HyperVTab(),
-              _PageTab.sdkSetup => const SdkSetupTab(),
-              _PageTab.diagnostics =>
-                DiagnosticsTab(onNavigateTab: _navigateToTab),
-            },
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                _keptPage(
+                  _PageTab.install,
+                  InstallTab(onNavigateTab: _navigateToTab),
+                ),
+                _keptPage(
+                  _PageTab.storage,
+                  StorageTab(onNavigateTab: _navigateToTab),
+                ),
+                _keptPage(_PageTab.download, const DownloadTab()),
+                _keptPage(_PageTab.envConfig, const EnvConfigTab()),
+                _keptPage(_PageTab.hyperV, const HyperVTab()),
+                _keptPage(_PageTab.sdkSetup, const SdkSetupTab()),
+                _keptPage(
+                  _PageTab.diagnostics,
+                  DiagnosticsTab(onNavigateTab: _navigateToTab),
+                ),
+              ],
+            ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _keptPage(_PageTab tab, Widget child) {
+    if (!_visited.contains(tab)) return const SizedBox.shrink();
+    return Offstage(
+      offstage: _activeTab != tab,
+      child: TickerMode(
+        enabled: _activeTab == tab,
+        child: child,
       ),
     );
   }

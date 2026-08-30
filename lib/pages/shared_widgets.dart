@@ -170,6 +170,7 @@ class EmptyPanel extends StatelessWidget {
     super.key,
     required this.hint,
     this.title,
+    this.icon,
     this.actionLabel,
     this.actionIcon,
     this.onAction,
@@ -177,6 +178,7 @@ class EmptyPanel extends StatelessWidget {
 
   final String hint;
   final String? title;
+  final IconData? icon;
   final String? actionLabel;
   final IconData? actionIcon;
   final VoidCallback? onAction;
@@ -191,7 +193,8 @@ class EmptyPanel extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            showAction ? Icons.download_outlined : Icons.travel_explore,
+            icon ??
+                (showAction ? Icons.download_outlined : Icons.travel_explore),
             size: 56,
             color: colorScheme.outline,
           ),

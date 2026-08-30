@@ -14,6 +14,7 @@ Future<int> runScanDataDirsCommand(List<String> args) async {
         'foundCount': result.foundCount,
         'totalSizeBytes': result.totalSizeBytes,
         'totalSizeHuman': result.totalSizeHuman,
+        'scannedAt': result.scannedAt,
         'entries': result.entries.map((entry) => {
               'category': entry.category,
               'label': entry.label,
@@ -23,6 +24,9 @@ Future<int> runScanDataDirsCommand(List<String> args) async {
               'sizeBytes': entry.sizeBytes,
               'sizeHuman': entry.sizeHuman,
               'notes': entry.notes,
+              'isActive': entry.isActive,
+              'activeSource': entry.activeSource,
+              'isOrphan': entry.isOrphan,
               'subEntries': entry.subEntries
                   .map((sub) => {
                         'name': sub.name,
@@ -36,7 +40,15 @@ Future<int> runScanDataDirsCommand(List<String> args) async {
       }));
     } else {
       stdout.writeln('共找到 ${result.foundCount} 个存在的目录，合计约 ${result.totalSizeHuman}');
+      if (result.scannedAt.isNotEmpty) {
+        stdout.writeln('扫描时间：${result.scannedAt}');
+      }
       stdout.writeln('');
+
+      if (result.entries.isEmpty) {
+        stdout.writeln('未找到 Android 开发相关目录。');
+        return 0;
+      }
 
       for (var i = 0; i < result.entries.length; i++) {
         final entry = result.entries[i];
@@ -49,6 +61,12 @@ Future<int> runScanDataDirsCommand(List<String> args) async {
         stdout.writeln('存在：${entry.exists ? '是' : '否'}');
         if (entry.exists) {
           stdout.writeln('大小：${entry.sizeHuman}');
+        }
+        if (entry.isOrphan) {
+          stdout.writeln('标记：卸载残留');
+        }
+        if (entry.activeSource.isNotEmpty) {
+          stdout.writeln('环境变量：${entry.activeSource}');
         }
         if (entry.notes.isNotEmpty) {
           stdout.writeln('说明：${entry.notes}');

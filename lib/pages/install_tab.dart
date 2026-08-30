@@ -31,6 +31,10 @@ class _InstallTabState extends State<InstallTab> {
   void initState() {
     super.initState();
     _result = ScanCache.loadInstall();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _loading) return;
+      _runDetect();
+    });
   }
 
   Future<void> _runDetect() async {
@@ -119,7 +123,7 @@ class _InstallTabState extends State<InstallTab> {
   Widget _buildResult() {
     if (_result == null && !_loading) {
       return const EmptyPanel(
-        hint: '点击右上角「开始检测」查找已安装的 Android Studio 与卸载残留',
+        hint: '正在查找本机 Android Studio。也可点击右上角「开始检测」手动重试。',
       );
     }
 
