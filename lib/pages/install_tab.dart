@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -8,7 +10,9 @@ import 'package:androidstudiowinhelper/core/scan_cache.dart';
 import 'package:androidstudiowinhelper/pages/shared_widgets.dart';
 
 class InstallTab extends StatefulWidget {
-  const InstallTab({super.key});
+  const InstallTab({super.key, this.onNavigateTab});
+
+  final void Function(String tabId)? onNavigateTab;
 
   @override
   State<InstallTab> createState() => _InstallTabState();
@@ -18,6 +22,7 @@ class _InstallTabState extends State<InstallTab> {
   final _detector = AndroidStudioDetector();
 
   bool _loading = false;
+  bool _deepScan = false;
   AndroidStudioDetectionResult? _result;
   ScanProgress? _progress;
   String? _error;
@@ -37,6 +42,7 @@ class _InstallTabState extends State<InstallTab> {
 
     try {
       final result = await _detector.detectAll(
+        deepScan: _deepScan,
         onProgress: (progress) {
           if (!mounted) return;
           setState(() => _progress = progress);
@@ -77,11 +83,27 @@ class _InstallTabState extends State<InstallTab> {
             icon: Icons.desktop_windows_outlined,
             title: '安装检测',
             trailing: trailing,
-            action: ActionButton(
-              label: _result != null ? '重新检测' : '开始检测',
-              icon: Icons.refresh,
-              loading: _loading,
-              onPressed: _loading ? null : _runDetect,
+            action: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Tooltip(
+                  message: '全盘搜索 studio.exe，可能需要数分钟',
+                  child: FilterChip(
+                    label: const Text('深度扫描'),
+                    selected: _deepScan,
+                    onSelected: _loading
+                        ? null
+                        : (value) => setState(() => _deepScan = value),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ActionButton(
+                  label: _result != null ? '重新检测' : '开始检测',
+                  icon: Icons.refresh,
+                  loading: _loading,
+                  onPressed: _loading ? null : _runDetect,
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 16),
@@ -104,7 +126,13 @@ class _InstallTabState extends State<InstallTab> {
     if (_result == null) return const SizedBox.shrink();
 
     if (!_result!.hasInstalls && !_result!.hasResidues) {
-      return const EmptyPanel(hint: '未检测到 Android Studio 安装或卸载残留。');
+      return EmptyPanel(
+        title: '还没有安装？',
+        hint: '本机未检测到 Android Studio',
+        actionLabel: '去安装',
+        actionIcon: Icons.download_outlined,
+        onAction: () => widget.onNavigateTab?.call('download'),
+      );
     }
 
     return ListView(
@@ -121,13 +149,14 @@ class _InstallTabState extends State<InstallTab> {
               install: _result!.installs[i],
               isSelected: identical(_result!.selected, _result!.installs[i]) ||
                   (_result!.selected?.path == _result!.installs[i].path),
+              selectionReason: _result!.selectionReason,
             ),
         ],
         if (_result!.hasResidues) ...[
           if (_result!.hasInstalls) const SizedBox(height: 8),
           _SectionLabel(
             title: '卸载残留',
-            subtitle: '安装器写入的注册表仍在，且无法解析到有效安装目录',
+            subtitle: '无法关联到有效安装的注册表项或运行时配置',
             count: _result!.residues.length,
             emphasize: true,
           ),
@@ -195,16 +224,30 @@ class _InstallCard extends StatelessWidget {
     required this.index,
     required this.install,
     required this.isSelected,
+    this.selectionReason,
   });
 
   final int index;
   final AndroidStudioInstall install;
   final bool isSelected;
+  final AndroidStudioSelectionReason? selectionReason;
+
+  bool get _androidHomeActive {
+    if (install.sdkPath.isEmpty) return false;
+    final sdk = _normalizeWindowsPath(install.sdkPath);
+    for (final key in const ['ANDROID_HOME', 'ANDROID_SDK_ROOT']) {
+      final value = Platform.environment[key];
+      if (value == null || value.trim().isEmpty) continue;
+      if (_normalizeWindowsPath(value) == sdk) return true;
+    }
+    return false;
+  }
 
   @override
   Widget build(BuildContext context) {
     final sources =
         install.source.split('；').where((s) => s.trim().isNotEmpty).toList();
+    final colorScheme = Theme.of(context).colorScheme;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -215,13 +258,43 @@ class _InstallCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Text(
-                  '[$index] ${install.name.isEmpty ? 'Android Studio' : install.name}',
-                  style: Theme.of(context).textTheme.titleSmall,
+                Expanded(
+                  child: Text(
+                    '[$index] ${install.name.isEmpty ? 'Android Studio' : install.name}',
+                    style: Theme.of(context).textTheme.titleSmall,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
+                if (_androidHomeActive) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: colorScheme.primaryContainer,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      'ANDROID_HOME',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: colorScheme.onPrimaryContainer,
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                  ),
+                ],
                 if (isSelected) ...[
                   const SizedBox(width: 8),
                   const Icon(Icons.star, color: Colors.amber, size: 20),
+                  if (selectionReason != null) ...[
+                    const SizedBox(width: 4),
+                    Text(
+                      selectionReason!.label,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                    ),
+                  ],
                 ],
               ],
             ),
@@ -257,6 +330,14 @@ class _InstallCard extends StatelessWidget {
       ),
     );
   }
+}
+
+String _normalizeWindowsPath(String path) {
+  var normalized = path.trim().replaceAll('/', r'\');
+  while (normalized.endsWith(r'\') && normalized.length > 3) {
+    normalized = normalized.substring(0, normalized.length - 1);
+  }
+  return normalized.toLowerCase();
 }
 
 class _ResidueCard extends StatelessWidget {
@@ -299,7 +380,7 @@ class _ResidueCard extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  '注册表残留',
+                  residue.kindLabel,
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: colorScheme.error,
                       ),

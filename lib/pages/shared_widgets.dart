@@ -166,28 +166,58 @@ class ProgressPanel extends StatelessWidget {
 }
 
 class EmptyPanel extends StatelessWidget {
-  const EmptyPanel({super.key, required this.hint});
+  const EmptyPanel({
+    super.key,
+    required this.hint,
+    this.title,
+    this.actionLabel,
+    this.actionIcon,
+    this.onAction,
+  });
 
   final String hint;
+  final String? title;
+  final String? actionLabel;
+  final IconData? actionIcon;
+  final VoidCallback? onAction;
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final showAction = actionLabel != null && onAction != null;
+
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            Icons.travel_explore,
+            showAction ? Icons.download_outlined : Icons.travel_explore,
             size: 56,
-            color: Theme.of(context).colorScheme.outline,
+            color: colorScheme.outline,
           ),
           const SizedBox(height: 16),
+          if (title != null) ...[
+            Text(
+              title!,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+          ],
           Text(
             hint,
+            textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  color: colorScheme.onSurfaceVariant,
                 ),
           ),
+          if (showAction) ...[
+            const SizedBox(height: 20),
+            FilledButton.icon(
+              onPressed: onAction,
+              icon: Icon(actionIcon ?? Icons.arrow_forward, size: 18),
+              label: Text(actionLabel!),
+            ),
+          ],
         ],
       ),
     );

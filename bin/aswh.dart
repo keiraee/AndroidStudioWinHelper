@@ -47,7 +47,7 @@ void _printHelp() {
   stdout.writeln('');
   stdout.writeln('选项：');
   stdout.writeln('  --json                  以 JSON 格式输出');
-  stdout.writeln('  --deep                  启用深度扫描（较慢）');
+  stdout.writeln('  --deep                  启用深度扫描（全盘搜索，最长约 10 分钟）');
   stdout.writeln('  --write                 写入模式（需要管理员权限）');
   stdout.writeln('  --name                  变量名（写入模式）');
   stdout.writeln('  --value                 变量值（写入模式）');

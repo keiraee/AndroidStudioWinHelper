@@ -60,7 +60,7 @@ void _printHumanReadable(AndroidStudioDetectionResult result) {
 
     if (result.selected != null) {
       stdout.writeln('推荐默认安装：${result.selected!.path}');
-      stdout.writeln('选择原因：${_reasonLabel(result.selectionReason)}');
+      stdout.writeln('选择原因：${result.selectionReason?.label ?? '未知'}');
       stdout.writeln('');
     }
   } else {
@@ -82,13 +82,4 @@ void _printHumanReadable(AndroidStudioDetectionResult result) {
       stdout.writeln('');
     }
   }
-}
-
-String _reasonLabel(AndroidStudioSelectionReason? reason) {
-  return switch (reason) {
-    AndroidStudioSelectionReason.runningProcess => '当前正在运行',
-    AndroidStudioSelectionReason.highestVersion => '版本最高',
-    AndroidStudioSelectionReason.onlyCandidate => '唯一候选',
-    null => '未知',
-  };
 }

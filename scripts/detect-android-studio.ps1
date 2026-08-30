@@ -43,6 +43,22 @@ function Normalize-DirPath {
     return $p
 }
 
+function Get-CanonicalPath {
+    param([string]$Path)
+
+    $normalized = Normalize-DirPath $Path
+    if (-not $normalized) { return $null }
+
+    # Get-Item.FullName 会展开 8.3 短名（PROGRA~1 → Program Files），Resolve-Path 不会
+    try {
+        if (Test-Path -LiteralPath $normalized) {
+            return (Get-Item -LiteralPath $normalized).FullName.TrimEnd('\')
+        }
+    } catch {}
+
+    try { return (Resolve-Path -LiteralPath $normalized).Path } catch { return $normalized }
+}
+
 function Test-ValidInstallDir {
     param([string]$InstallPath)
 
@@ -113,7 +129,8 @@ function Add-InstallPath {
 
     if (-not (Test-ValidInstallDir $path)) { return }
 
-    try { $resolved = (Resolve-Path -LiteralPath $path).Path } catch { $resolved = $path }
+    $resolved = Get-CanonicalPath $path
+    if (-not $resolved) { $resolved = $path }
     $key = $resolved.ToLowerInvariant()
 
     if (-not $found.ContainsKey($key)) {
@@ -191,35 +208,41 @@ function Get-Channel {
         [string]$Name,
         [string]$Version,
         [string]$DataDirName,
-        [string]$Build
+        [string]$VersionSuffix
     )
 
-    # 渠道检测策略：
-    # 1. 优先从 build 号提取渠道数字 (AI-X.Y.Z 中 Z 是渠道: 1=Stable, 2+=Beta/Canary)
-    # 2. 回退到路径/名称字符串匹配
+    # 渠道检测策略（依据见 docs/INSTALL-DETECTION-REVIEW.md §2.1）：
+    # 1. product-info.json → versionSuffix（IntelliJ Platform 官方 ProductInfo 字段）
+    # 2. product-info.json → dataDirectoryName（Google 预览版用 AndroidStudioPreview* 隔离配置）
+    # 3. 安装路径 / 显示名称 / 版本字符串匹配（兜底）
+    #
+    # 注意：buildNumber（如 AI-242.23339.11.2421.12700392）第三位是 IntelliJ 平台小版本，
+    # 不是发布渠道；Stable / Canary 可共享同一 AI-242 分支号。
 
-    # 方法 1: 从 build 号提取渠道数字
-    # build 格式: AI-<major><channel>.<jb1>.<jb2>.<yyww>.<patch>
-    # 例如 AI-241.18034.62.2412.12266719 → major=24, channel=1 (Stable)
-    #      AI-262.9437.185.2621.16128175 → major=26, channel=2 (Canary)
-    if ($Build -and $Build -match '^AI-(\d)(\d)(\d)\.') {
-        $channelDigit = [int]$Matches[3]
-        if ($channelDigit -eq 1) { return "Stable" }
-        if ($channelDigit -eq 2) { return "Beta" }
-        return "Canary"
+    if (-not [string]::IsNullOrWhiteSpace($VersionSuffix)) {
+        $suffix = $VersionSuffix.Trim()
+        if ($suffix -match '(?i)canary') { return "Canary" }
+        if ($suffix -match '(?i)beta') { return "Beta" }
+        if ($suffix -match '(?i)\brc\b|release candidate') { return "RC" }
+        if ($suffix -match '(?i)preview') { return "Preview" }
+        if ($suffix -match '(?i)eap') { return "Canary" }
+        if ($suffix -match '(?i)dev|nightly') { return "Dev" }
+        return $suffix
     }
 
-    # 方法 2: 从 build 号中匹配关键字
-    if ($Build) {
-        if ($Build -match '(?i)canary|dev') { return "Canary" }
-        if ($Build -match '(?i)beta|rc|eap') { return "Beta" }
+    if ($DataDirName -match '(?i)preview') {
+        $hint = "$Path $Name $Version $DataDirName"
+        if ($hint -match '(?i)canary') { return "Canary" }
+        if ($hint -match '(?i)beta') { return "Beta" }
+        if ($hint -match '(?i)\brc\b|release candidate') { return "RC" }
+        return "Preview"
     }
 
-    # 方法 3: 路径/名称/版本/dataDirectoryName 字符串匹配
     $all = "$Path $Name $Version $DataDirName"
     if ($all -match '(?i)canary') { return "Canary" }
     if ($all -match '(?i)beta') { return "Beta" }
-    if ($all -match '(?i)preview|rc') { return "Preview" }
+    if ($all -match '(?i)\brc\b|release candidate|preview') { return "Preview" }
+    if ($all -match '(?i)dev|nightly') { return "Dev" }
     return "Stable"
 }
 
@@ -251,16 +274,6 @@ function Get-OfficialProductRegPaths {
     )
 }
 
-function Get-OfficialInstallPathFromProductReg {
-    foreach ($key in (Get-OfficialProductRegPaths)) {
-        if (-not (Test-Path -LiteralPath $key)) { continue }
-        $item = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
-        $path = Normalize-DirPath $item.Path
-        if ($path) { return $path }
-    }
-    return $null
-}
-
 Write-DetectProgress -Percent 5 -Message "正在检测：运行中进程..."
 
 Get-Process studio64,studio -ErrorAction SilentlyContinue | ForEach-Object {
@@ -284,7 +297,9 @@ foreach ($productKey in (Get-OfficialProductRegPaths)) {
 
     # 收集 NSIS 安装器写入的附加注册表值
     if ($productPath) {
-        $nsisRegValues[$productPath.ToLowerInvariant()] = [PSCustomObject]@{
+        $nsisKey = Get-CanonicalPath $productPath
+        if (-not $nsisKey) { $nsisKey = $productPath }
+        $nsisRegValues[$nsisKey.ToLowerInvariant()] = [PSCustomObject]@{
             SdkPath          = "$(Normalize-DirPath $product.SdkPath)"
             InstallSdk       = "$($product.InstallSdk)"
             InstallHaxm      = "$($product.InstallHaxm)"
@@ -337,8 +352,6 @@ $uninstallRegPaths = @(
     "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
 )
 
-$officialPathHint = Get-OfficialInstallPathFromProductReg
-
 foreach ($regPath in $uninstallRegPaths) {
     $uninstallItems = @(
         Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue |
@@ -358,10 +371,9 @@ foreach ($regPath in $uninstallRegPaths) {
         Add-FromCommandText -CommandText $item.QuietUninstallString -Source "注册表 QuietUninstallString"
         Add-FromCommandText -CommandText $item.ModifyPath -Source "注册表 ModifyPath"
 
-        # 候选：InstallLocation 可空；官方 Path / UninstallString 才是主依据
+        # 候选只来自本卸载项自身字段，避免把其他安装的官方 Path 填进来漏报残留
         $candidates = New-Object System.Collections.Generic.List[string]
         Add-CandidatePath -List $candidates -Path $installLoc
-        Add-CandidatePath -List $candidates -Path $officialPathHint
         foreach ($cmd in @(
             $item.UninstallString,
             $item.QuietUninstallString,
@@ -385,7 +397,7 @@ foreach ($regPath in $uninstallRegPaths) {
         $reportPath = if ($installLoc) { $installLoc } elseif ($candidates.Count -gt 0) { $candidates[0] } else { "" }
 
         if ($candidates.Count -eq 0) {
-            $reason = "卸载项仍在，且无法从官方 Path / UninstallString 解析安装路径"
+            $reason = "卸载项仍在，且无法从 InstallLocation / UninstallString / DisplayIcon 解析安装路径"
         } elseif ($reportPath -and -not (Test-Path -LiteralPath $reportPath)) {
             $reason = "卸载项仍在，但安装目录不存在"
         } else {
@@ -442,8 +454,83 @@ if (Test-Path -LiteralPath $googleLocal) {
     }
 }
 
-# 孤儿配置检测：枚举运行时目录，关联 .home，未关联的标记为残留
-Write-DetectProgress -Percent 45 -Message "正在检测：运行时配置残留..."
+Write-DetectProgress -Percent 50 -Message "正在检测：开始菜单与桌面快捷方式..."
+
+$shortcutRoots = @(
+    "$env:ProgramData\Microsoft\Windows\Start Menu\Programs",
+    "$env:APPDATA\Microsoft\Windows\Start Menu\Programs",
+    "$env:PUBLIC\Desktop",
+    "$env:USERPROFILE\Desktop"
+)
+
+$shell = New-Object -ComObject WScript.Shell
+
+foreach ($root in $shortcutRoots) {
+    if (-not (Test-Path $root)) { continue }
+
+    Get-ChildItem -Path $root -Filter *.lnk -Recurse -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '(?i)Android Studio' } |
+    ForEach-Object {
+        $lnk = $shell.CreateShortcut($_.FullName)
+        Add-FromExePath -ExePath $lnk.TargetPath -Source ("快捷方式 " + $_.FullName)
+    }
+}
+
+Write-DetectProgress -Percent 65 -Message "正在检测：JetBrains Toolbox..."
+
+$toolboxRoots = @(
+    "$env:LOCALAPPDATA\JetBrains\Toolbox\apps\AndroidStudio",
+    "$env:LOCALAPPDATA\JetBrains\Toolbox\apps"
+)
+
+foreach ($root in $toolboxRoots) {
+    if (-not (Test-Path $root)) { continue }
+
+    Get-ChildItem -Path $root -Filter studio64.exe -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+        Add-FromExePath -ExePath $_.FullName -Source "JetBrains Toolbox"
+    }
+
+    Get-ChildItem -Path $root -Filter studio.exe -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+        Add-FromExePath -ExePath $_.FullName -Source "JetBrains Toolbox"
+    }
+}
+
+Write-DetectProgress -Percent 75 -Message "正在检测：常见安装路径..."
+
+$commonPaths = @(
+    "C:\Program Files\Android\Android Studio",
+    "C:\Program Files\Android\Android Studio Preview",
+    "C:\Program Files (x86)\Android\Android Studio",
+    "$env:LOCALAPPDATA\Programs\Android Studio"
+)
+
+foreach ($path in $commonPaths) {
+    Add-InstallPath -InstallPath $path -Source "常见安装路径"
+}
+
+if ($DeepScan) {
+    $roots = @()
+    if ($DeepScanRoots -and $DeepScanRoots.Count -gt 0) {
+        $roots = $DeepScanRoots
+    } else {
+        $roots = (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Select-Object -ExpandProperty DeviceID | ForEach-Object { "$_\" })
+    }
+
+    foreach ($root in $roots) {
+        if (-not (Test-Path $root)) { continue }
+
+        Write-DetectProgress -Percent 85 -Message "正在深度扫描：$root（耗时较长）..." -Path $root
+
+        # -Include 在无通配路径时可能只扫顶层；拼 \* 才能真正递归。
+        $searchRoot = $root.TrimEnd('\') + '\*'
+        Get-ChildItem -Path $searchRoot -Include studio64.exe, studio.exe -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+            Add-FromExePath -ExePath $_.FullName -Source ("深度扫描 " + $root)
+        }
+    }
+}
+
+# 孤儿配置检测：所有检测源完成后再拍快照，避免漏掉快捷方式 / Toolbox / 常见路径 / 深度扫描才发现的安装
+Write-DetectProgress -Percent 90 -Message "正在检测：运行时配置残留..."
 
 $knownInstallPaths = @($found.Keys)
 $googleRoaming = Join-Path $env:APPDATA "Google"
@@ -547,83 +634,6 @@ foreach ($selector in ($allSelectors.Keys | Sort-Object)) {
         -Source "运行时配置目录"
 }
 
-Write-DetectProgress -Percent 50 -Message "正在检测：开始菜单与桌面快捷方式..."
-
-$shortcutRoots = @(
-    "$env:ProgramData\Microsoft\Windows\Start Menu\Programs",
-    "$env:APPDATA\Microsoft\Windows\Start Menu\Programs",
-    "$env:PUBLIC\Desktop",
-    "$env:USERPROFILE\Desktop"
-)
-
-$shell = New-Object -ComObject WScript.Shell
-
-foreach ($root in $shortcutRoots) {
-    if (-not (Test-Path $root)) { continue }
-
-    Get-ChildItem -Path $root -Filter *.lnk -Recurse -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match '(?i)Android Studio' } |
-    ForEach-Object {
-        $lnk = $shell.CreateShortcut($_.FullName)
-        Add-FromExePath -ExePath $lnk.TargetPath -Source ("快捷方式 " + $_.FullName)
-    }
-}
-
-Write-DetectProgress -Percent 65 -Message "正在检测：JetBrains Toolbox..."
-
-$toolboxRoots = @(
-    "$env:LOCALAPPDATA\JetBrains\Toolbox\apps\AndroidStudio",
-    "$env:LOCALAPPDATA\JetBrains\Toolbox\apps"
-)
-
-foreach ($root in $toolboxRoots) {
-    if (-not (Test-Path $root)) { continue }
-
-    Get-ChildItem -Path $root -Filter studio64.exe -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-        Add-FromExePath -ExePath $_.FullName -Source "JetBrains Toolbox"
-    }
-
-    Get-ChildItem -Path $root -Filter studio.exe -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-        Add-FromExePath -ExePath $_.FullName -Source "JetBrains Toolbox"
-    }
-}
-
-Write-DetectProgress -Percent 75 -Message "正在检测：常见安装路径..."
-
-$commonPaths = @(
-    "C:\Program Files\Android\Android Studio",
-    "C:\Program Files\Android\Android Studio Preview",
-    "C:\Program Files (x86)\Android\Android Studio",
-    "$env:LOCALAPPDATA\Programs\Android Studio"
-)
-
-foreach ($path in $commonPaths) {
-    Add-InstallPath -InstallPath $path -Source "常见安装路径"
-}
-
-if ($DeepScan) {
-    Write-DetectProgress -Percent 85 -Message "正在检测：深度扫描（耗时较长）..."
-
-    $roots = @()
-    if ($DeepScanRoots -and $DeepScanRoots.Count -gt 0) {
-        $roots = $DeepScanRoots
-    } else {
-        $roots = (Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Select-Object -ExpandProperty DeviceID | ForEach-Object { "$_\" })
-    }
-
-    foreach ($root in $roots) {
-        if (-not (Test-Path $root)) { continue }
-
-        Get-ChildItem -Path $root -Filter studio64.exe -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-            Add-FromExePath -ExePath $_.FullName -Source ("深度扫描 " + $root)
-        }
-
-        Get-ChildItem -Path $root -Filter studio.exe -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-            Add-FromExePath -ExePath $_.FullName -Source ("深度扫描 " + $root)
-        }
-    }
-}
-
 $results = @()
 
 foreach ($entry in ($found.Values | Sort-Object Path)) {
@@ -639,6 +649,7 @@ foreach ($entry in ($found.Values | Sort-Object Path)) {
     $version = ""
     $build = ""
     $dataDirectoryName = ""
+    $versionSuffix = ""
     $productVendor = ""
     $productCode = ""
     $launcherPath = ""
@@ -650,6 +661,7 @@ foreach ($entry in ($found.Values | Sort-Object Path)) {
             $version = "$($info.version)"
             $build = "$($info.buildNumber)"
             $dataDirectoryName = "$($info.dataDirectoryName)"
+            $versionSuffix = "$($info.versionSuffix)"
             $productVendor = "$($info.productVendor)"
             $productCode = "$($info.productCode)"
             # 提取 Windows amd64 launcherPath
@@ -664,8 +676,8 @@ foreach ($entry in ($found.Values | Sort-Object Path)) {
         $build = (Get-Content -LiteralPath $buildPath -TotalCount 1)
     }
 
-    # 渠道检测：优先用 dataDirectoryName 精确判断，回退到路径字符串匹配
-    $channel = Get-Channel -Path $path -Name $name -Version $version -DataDirName $dataDirectoryName -Build $build
+    # 渠道检测：versionSuffix → dataDirectoryName → 路径字符串
+    $channel = Get-Channel -Path $path -Name $name -Version $version -DataDirName $dataDirectoryName -VersionSuffix $versionSuffix
     $sources = ($entry.Sources | Sort-Object) -join "；"
 
     $nsisReg = $nsisRegValues[$path.ToLowerInvariant()]
@@ -682,7 +694,6 @@ foreach ($entry in ($found.Values | Sort-Object Path)) {
         launcherPath = $launcherPath
         channel = $channel
         source = $sources
-        installed = $true
         sdkPath = if ($nsisReg) { $nsisReg.SdkPath } else { "" }
         installSdk = if ($nsisReg) { $nsisReg.InstallSdk } else { "" }
         installHaxm = if ($nsisReg) { $nsisReg.InstallHaxm } else { "" }
@@ -709,7 +720,7 @@ if ($Json) {
     } else {
         Write-Output $jsonText
     }
-    if ($results.Count -eq 0 -and $residues.Count -eq 0) { exit 1 } else { exit 0 }
+    exit 0
 }
 
 Write-Host ""
@@ -755,5 +766,4 @@ if ($residues.Count -gt 0) {
     }
 }
 
-if ($results.Count -eq 0 -and $residues.Count -eq 0) { exit 1 }
 exit 0

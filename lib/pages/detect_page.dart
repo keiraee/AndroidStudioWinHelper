@@ -291,7 +291,7 @@ class _DetectPageState extends State<DetectPage> {
           ),
           Expanded(
             child: switch (_activeTab) {
-              _PageTab.install => const InstallTab(),
+              _PageTab.install => InstallTab(onNavigateTab: _navigateToTab),
               _PageTab.storage => const StorageTab(),
               _PageTab.download => const DownloadTab(),
               _PageTab.envConfig => const EnvConfigTab(),

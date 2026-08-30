@@ -12,12 +12,16 @@ class AndroidStudioDetector {
   AndroidStudioDetector({this.scriptPath, PowerShellRunner? runner})
       : _runner = runner ?? PowerShellRunner(logTag: 'Detect');
 
+  static const Duration defaultTimeout = Duration(seconds: 120);
+  static const Duration deepScanTimeout = Duration(seconds: 600);
+
   final String? scriptPath;
   final PowerShellRunner _runner;
 
   Future<AndroidStudioDetectionResult> detectAll({
     bool deepScan = false,
     DetectProgressCallback? onProgress,
+    Duration? timeout,
   }) async {
     if (!Platform.isWindows) {
       throw UnsupportedError('Android Studio 检测仅支持 Windows。');
@@ -40,11 +44,9 @@ class AndroidStudioDetector {
       scriptPath: scriptFile.absolute.path,
       extraArgs: extraArgs,
       onProgress: onProgress,
+      timeout: timeout ??
+          (deepScan ? deepScanTimeout : defaultTimeout),
     );
-
-    if (!result.success && result.stdout.isEmpty) {
-      throw StateError('PowerShell 执行失败：${result.stderr}');
-    }
 
     return _parseOutput(result);
   }
@@ -55,32 +57,65 @@ class AndroidStudioDetector {
       return _parseDecoded(result.jsonResult);
     }
 
-    // 回退：从 stdout 中提取 JSON
     final stdoutText = result.stdout;
-    final marker = '@@RESULT|';
+    const marker = '@@RESULT|';
     final startIdx = stdoutText.indexOf(marker);
-    final String jsonText;
     if (startIdx >= 0) {
       final afterMarker = startIdx + marker.length;
       final endIdx = stdoutText.indexOf('@@', afterMarker);
-      if (endIdx > afterMarker) {
-        jsonText = stdoutText.substring(afterMarker, endIdx).trim();
-      } else {
-        jsonText = stdoutText.substring(afterMarker).trim();
-      }
-    } else {
-      jsonText = stdoutText
-          .split('\n')
-          .where((line) => !line.trim().startsWith('@@PROGRESS|'))
-          .join('\n')
-          .trim();
+      final jsonText = endIdx > afterMarker
+          ? stdoutText.substring(afterMarker, endIdx).trim()
+          : stdoutText.substring(afterMarker).trim();
+      return _parseJsonText(jsonText, result);
     }
+
+    // 兼容非 Progress 模式：stdout 直接输出 JSON
+    final jsonText = stdoutText
+        .split('\n')
+        .where((line) => !line.trim().startsWith('@@PROGRESS|'))
+        .join('\n')
+        .trim();
 
     if (jsonText.isEmpty) {
-      return const AndroidStudioDetectionResult(installs: []);
+      throw StateError(_buildDetectionFailureMessage(result));
     }
 
-    return _parseDecoded(jsonDecode(jsonText));
+    return _parseJsonText(jsonText, result);
+  }
+
+  AndroidStudioDetectionResult _parseJsonText(
+    String jsonText,
+    PowerShellResult result,
+  ) {
+    if (jsonText.isEmpty) {
+      throw StateError(_buildDetectionFailureMessage(result));
+    }
+
+    try {
+      return _parseDecoded(jsonDecode(jsonText));
+    } on FormatException catch (error) {
+      throw StateError('检测脚本返回的结果无法解析：$error');
+    }
+  }
+
+  String _buildDetectionFailureMessage(PowerShellResult result) {
+    final parts = <String>['检测脚本未返回有效结果'];
+
+    if (result.exitCode != 0) {
+      parts.add('exitCode=${result.exitCode}');
+    }
+
+    final stderr = result.stderr.trim();
+    if (stderr.isNotEmpty) {
+      parts.add('stderr: $stderr');
+    }
+
+    if (result.progressEvents.isNotEmpty) {
+      final last = result.progressEvents.last;
+      parts.add('最后进度: ${last.percent}% ${last.message}');
+    }
+
+    return parts.join('；');
   }
 
   AndroidStudioDetectionResult _parseDecoded(Object? decoded) {
@@ -153,10 +188,11 @@ class AndroidStudioDetector {
       return (installs.first, AndroidStudioSelectionReason.onlyCandidate);
     }
 
-    final running = installs.where(
-      (item) => item.source.contains('运行中进程'),
-    );
-    if (running.length == 1) {
+    final running = installs
+        .where((item) => item.source.contains('运行中进程'))
+        .toList();
+    if (running.isNotEmpty) {
+      running.sort((a, b) => _compareVersion(b.build, a.build));
       return (running.first, AndroidStudioSelectionReason.runningProcess);
     }
 
