@@ -46,7 +46,28 @@ class _InstallerInterceptDialogState extends State<_InstallerInterceptDialog> {
   bool _isTerminal(InstallerInterceptPhase phase) {
     return phase == InstallerInterceptPhase.done ||
         phase == InstallerInterceptPhase.cancelled ||
+        phase == InstallerInterceptPhase.interrupted ||
         phase == InstallerInterceptPhase.error;
+  }
+
+  String _hintForPhase(InstallerInterceptPhase phase) {
+    return switch (phase) {
+      InstallerInterceptPhase.waitingWizard ||
+      InstallerInterceptPhase.alignedInstallDir ||
+      InstallerInterceptPhase.installDirMiss ||
+      InstallerInterceptPhase.alignedSdkTmp =>
+        '请在官方 NSIS 安装向导中操作。我们会纠正安装目录、SDK 与用户配置路径。',
+      InstallerInterceptPhase.installerFinished ||
+      InstallerInterceptPhase.waitingStudioLaunch ||
+      InstallerInterceptPhase.launchingStudio =>
+        '安装向导关闭后仍需启动 Android Studio 完成首次 SDK 配置，这与 NSIS 解压是不同阶段。',
+      InstallerInterceptPhase.studioRunning ||
+      InstallerInterceptPhase.writingOtherXml =>
+        'Android Studio 首次启动向导请在 IDE 内完成；本工具已预写 SDK 路径。',
+      InstallerInterceptPhase.interrupted =>
+        '监视已暂停。关闭此窗口后，可在下载页点击「继续安装」恢复。',
+      _ => '安装监视运行中…',
+    };
   }
 
   Future<void> _stopMonitoring() async {
@@ -61,20 +82,24 @@ class _InstallerInterceptDialogState extends State<_InstallerInterceptDialog> {
     final colorScheme = theme.colorScheme;
 
     return AlertDialog(
-      title: const Text('安装路径对齐'),
+      title: const Text('安装监视'),
       content: SizedBox(
-        width: 420,
+        width: 440,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 if (!_finished)
-                  const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                  const Padding(
+                    padding: EdgeInsets.only(top: 2),
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
                   )
                 else
                   Icon(
@@ -107,7 +132,7 @@ class _InstallerInterceptDialogState extends State<_InstallerInterceptDialog> {
             ],
             const SizedBox(height: 12),
             Text(
-              '请继续在官方安装向导中操作。我们会在进入下一步前自动纠正安装目录、SDK 与用户配置路径。',
+              _hintForPhase(_status.phase),
               style: theme.textTheme.bodySmall?.copyWith(
                 color: colorScheme.onSurfaceVariant,
               ),
@@ -116,10 +141,12 @@ class _InstallerInterceptDialogState extends State<_InstallerInterceptDialog> {
         ),
       ),
       actions: [
-        if (!_finished)
+        if (!_finished &&
+            _status.phase != InstallerInterceptPhase.studioRunning &&
+            _status.phase != InstallerInterceptPhase.launchingStudio)
           TextButton(
             onPressed: _stopMonitoring,
-            child: const Text('停止监视'),
+            child: const Text('暂停监视'),
           ),
         if (_finished)
           FilledButton(

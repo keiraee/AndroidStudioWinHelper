@@ -509,17 +509,32 @@ class DownloadManager extends ChangeNotifier {
     await Process.start('explorer', ['/select,', task.filePath]);
   }
 
-  Future<Process?> runInstaller(String versionKey) async {
+  Future<Process?> runInstaller(
+    String versionKey, {
+    String? installHome,
+  }) async {
     final task = _tasks[versionKey];
     if (task == null || task.state != DownloadState.completed) return null;
+
+    final args = <String>[];
+    final home = installHome
+        ?.trim()
+        .replaceAll('/', r'\')
+        .replaceAll(RegExp(r'[\\/]+$'), '');
+    if (home != null && home.isNotEmpty) {
+      // NSIS 官方：/D= 必须为最后一个参数，路径不加引号（可含空格）
+      args.add('/D=$home');
+    }
+
     LogManager.instance.write(
       'Download',
-      '[$versionKey] 启动安装程序: ${task.filePath}',
+      '[$versionKey] 启动安装程序: ${task.filePath}'
+      '${args.isEmpty ? '' : ' ${args.join(' ')}'}',
     );
     final workingDirectory = File(task.filePath).parent.path;
     return Process.start(
       task.filePath,
-      const [],
+      args,
       workingDirectory: workingDirectory,
       mode: ProcessStartMode.normal,
     );

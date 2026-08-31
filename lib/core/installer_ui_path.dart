@@ -21,6 +21,7 @@ class InstallerUiPath {
     if (!isSupported) {
       return const InstallerUiAlignResult(
         installDirAligned: false,
+        installDirVerified: false,
         sdkEditAligned: false,
         userHomeEditAligned: false,
         foundInstallerWindow: false,
@@ -50,6 +51,7 @@ class InstallerUiPath {
     if (result.exitCode != 0) {
       return const InstallerUiAlignResult(
         installDirAligned: false,
+        installDirVerified: false,
         sdkEditAligned: false,
         userHomeEditAligned: false,
         foundInstallerWindow: false,
@@ -60,6 +62,7 @@ class InstallerUiPath {
     if (stdout.isEmpty) {
       return const InstallerUiAlignResult(
         installDirAligned: false,
+        installDirVerified: false,
         sdkEditAligned: false,
         userHomeEditAligned: false,
         foundInstallerWindow: false,
@@ -70,13 +73,17 @@ class InstallerUiPath {
       final json = jsonDecode(stdout) as Map<String, dynamic>;
       return InstallerUiAlignResult(
         installDirAligned: json['installDirAligned'] == true,
+        installDirVerified: json['installDirVerified'] == true ||
+            json['installDirAligned'] == true,
         sdkEditAligned: json['sdkEditAligned'] == true,
         userHomeEditAligned: json['userHomeEditAligned'] == true,
         foundInstallerWindow: json['foundInstallerWindow'] == true,
+        diagnostics: json['installDiagnostics']?.toString() ?? '',
       );
     } catch (_) {
       return const InstallerUiAlignResult(
         installDirAligned: false,
+        installDirVerified: false,
         sdkEditAligned: false,
         userHomeEditAligned: false,
         foundInstallerWindow: false,
@@ -88,16 +95,20 @@ class InstallerUiPath {
 class InstallerUiAlignResult {
   const InstallerUiAlignResult({
     required this.installDirAligned,
+    required this.installDirVerified,
     required this.sdkEditAligned,
     required this.userHomeEditAligned,
     required this.foundInstallerWindow,
+    this.diagnostics = '',
   });
 
   final bool installDirAligned;
+  final bool installDirVerified;
   final bool sdkEditAligned;
   final bool userHomeEditAligned;
   final bool foundInstallerWindow;
+  final String diagnostics;
 
   bool get anyAligned =>
-      installDirAligned || sdkEditAligned || userHomeEditAligned;
+      installDirVerified || sdkEditAligned || userHomeEditAligned;
 }

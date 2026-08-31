@@ -21,6 +21,7 @@ import 'package:androidstudiowinhelper/core/version/install_upgrade.dart';
 import 'package:androidstudiowinhelper/core/version/version_catalog.dart';
 import 'package:androidstudiowinhelper/pages/download_progress_card.dart';
 import 'package:androidstudiowinhelper/core/as_first_run_sdk_config.dart';
+import 'package:androidstudiowinhelper/core/install_session.dart';
 import 'package:androidstudiowinhelper/core/installer_path_interceptor.dart';
 import 'package:androidstudiowinhelper/pages/install_env_wizard.dart';
 import 'package:androidstudiowinhelper/pages/installer_intercept_panel.dart';
@@ -58,6 +59,7 @@ class _DownloadTabState extends State<DownloadTab> {
   final Set<String> _copyLinkKeys = {};
   String? _checkingKey;
   AndroidStudioDetectionResult? _detection;
+  InstallSession? _pendingInstallSession;
 
   @override
   void initState() {
@@ -72,7 +74,44 @@ class _DownloadTabState extends State<DownloadTab> {
       if (!mounted) return;
       _loadPage();
       _refreshInstalled();
+      _loadPendingInstallSession();
     });
+  }
+
+  void _loadPendingInstallSession() {
+    final session = InstallSession.loadPending();
+    if (!mounted) return;
+    setState(() => _pendingInstallSession = session);
+  }
+
+  Future<void> _continueInstallSession() async {
+    final session = _pendingInstallSession;
+    if (session == null) return;
+    if (InstallerPathInterceptor.hasActive) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已有安装监视任务在运行')),
+      );
+      return;
+    }
+    try {
+      final interceptor = await InstallerPathInterceptor.resume(session: session);
+      if (!mounted) return;
+      await showInstallerInterceptPanel(
+        context: context,
+        interceptor: interceptor,
+      );
+      _loadPendingInstallSession();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('继续安装失败: $e')),
+      );
+    }
+  }
+
+  Future<void> _dismissInstallSession() async {
+    await InstallSession.clear();
+    _loadPendingInstallSession();
   }
 
   @override
@@ -227,11 +266,15 @@ class _DownloadTabState extends State<DownloadTab> {
     }
 
     try {
-      final process = await _downloadManager.runInstaller(versionKey);
+      final resolved = await AsFirstRunSdkConfig.resolvePaths(preferred: paths);
+      final process = await _downloadManager.runInstaller(
+        versionKey,
+        installHome: resolved['AS_INSTALL_HOME'],
+      );
       if (!mounted || process == null) return;
 
-      final resolved = await AsFirstRunSdkConfig.resolvePaths(preferred: paths);
       final interceptor = await InstallerPathInterceptor.start(
+        versionKey: versionKey,
         workingDirectory: File(task.filePath).parent.path,
         paths: resolved,
         installerProcess: process,
@@ -242,6 +285,7 @@ class _DownloadTabState extends State<DownloadTab> {
         context: context,
         interceptor: interceptor,
       );
+      _loadPendingInstallSession();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -524,6 +568,14 @@ class _DownloadTabState extends State<DownloadTab> {
               ],
             ),
           ),
+          if (_pendingInstallSession != null) ...[
+            const SizedBox(height: 12),
+            _InstallResumeBanner(
+              session: _pendingInstallSession!,
+              onContinue: _continueInstallSession,
+              onDismiss: _dismissInstallSession,
+            ),
+          ],
           if (_settings.hasDownloadDirectory)
             Padding(
               padding: const EdgeInsets.only(top: 6),
@@ -1497,6 +1549,84 @@ class _VersionCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _InstallResumeBanner extends StatelessWidget {
+  const _InstallResumeBanner({
+    required this.session,
+    required this.onContinue,
+    required this.onDismiss,
+  });
+
+  final InstallSession session;
+  final VoidCallback onContinue;
+  final VoidCallback onDismiss;
+
+  String _phaseLabel(InstallSessionPhase phase) {
+    return switch (phase) {
+      InstallSessionPhase.watchingInstaller => '安装向导监视中断',
+      InstallSessionPhase.awaitingStudioLaunch => '等待启动 Android Studio',
+      InstallSessionPhase.studioFirstRunPending => '等待 IDE 首次配置',
+      InstallSessionPhase.interrupted => '安装监视已暂停',
+      _ => '安装未完成',
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Material(
+      color: colorScheme.primaryContainer.withValues(alpha: 0.45),
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.pending_actions, color: colorScheme.primary, size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _phaseLabel(session.phase),
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'NSIS 安装器结束不等于安装完成。'
+                    '可继续：验证安装、启动 Studio、写入首次 SDK 配置。',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  if (session.installHome != null) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      session.installHome!,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        fontFamily: 'Consolas',
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            TextButton(onPressed: onDismiss, child: const Text('忽略')),
+            FilledButton(
+              onPressed: onContinue,
+              child: const Text('继续安装'),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -71,15 +71,32 @@ public static class AswhInstallerUi {
         return value;
     }
 
-    public static bool WriteIfDifferent(IntPtr hWnd, string target) {
+    public static bool TryWritePath(IntPtr hWnd, string target, out string before, out string after, out bool setOk) {
+        before = ReadText(hWnd);
+        after = before;
+        setOk = false;
         target = NormalizePath(target);
         if (string.IsNullOrEmpty(target)) return false;
-        var current = NormalizePath(ReadText(hWnd));
-        if (current == target) return true;
-        return SetWindowText(hWnd, target);
+        var current = NormalizePath(before);
+        if (current == target) {
+            after = before;
+            return true;
+        }
+        setOk = SetWindowText(hWnd, target);
+        after = ReadText(hWnd);
+        return NormalizePath(after) == target;
     }
 }
 "@
+
+function Test-InstallDirCandidate([string]$current) {
+    if ([string]::IsNullOrWhiteSpace($current)) { return $false }
+    $lower = $current.ToLowerInvariant().Replace('/', '\')
+    if ($lower.Contains('\program files') -and $lower.Contains('android studio')) { return $true }
+    if ($lower.EndsWith('\androidstudio')) { return $true }
+    if ($lower.Contains('\android\android studio')) { return $true }
+    return $false
+}
 
 $windows = New-Object System.Collections.Generic.List[IntPtr]
 $collectTop = [AswhInstallerUi+EnumWindowsProc]{
@@ -94,9 +111,13 @@ $collectTop = [AswhInstallerUi+EnumWindowsProc]{
 }
 [AswhInstallerUi]::EnumWindows($collectTop, [IntPtr]::Zero) | Out-Null
 
-$installAligned = $false
-$sdkAligned = $false
-$userAligned = $false
+$installAttempted = $false
+$installVerified = $false
+$sdkAttempted = $false
+$sdkVerified = $false
+$userAttempted = $false
+$userVerified = $false
+$installDiag = @()
 $foundWindow = $windows.Count -gt 0
 
 foreach ($hwnd in $windows) {
@@ -104,40 +125,86 @@ foreach ($hwnd in $windows) {
     $childProc = [AswhInstallerUi+EnumWindowsProc]{
         param([IntPtr]$hWnd, [IntPtr]$lParam)
         if (-not [AswhInstallerUi]::IsWindowVisible($hWnd)) { return $true }
-        if ([AswhInstallerUi]::ReadClass($hWnd) -ne 'Edit') { return $true }
+        $className = [AswhInstallerUi]::ReadClass($hWnd)
+        if ($className -ne 'Edit' -and $className -ne 'ComboBoxEx32') { return $true }
         [void]$editList.Add($hWnd)
         return $true
     }
     [AswhInstallerUi]::EnumChildWindows($hwnd, $childProc, [IntPtr]::Zero) | Out-Null
 
     foreach ($edit in $editList) {
-        $current = [AswhInstallerUi]::ReadText($edit).ToLowerInvariant().Replace('/', '\')
-        if ($current.Contains('\program files') -and $current.Contains('android studio')) {
-            if ([AswhInstallerUi]::WriteIfDifferent($edit, $InstallHome)) { $installAligned = $true }
+        $current = [AswhInstallerUi]::ReadText($edit)
+        $className = [AswhInstallerUi]::ReadClass($edit)
+        $before = $null
+        $after = $null
+        $setOk = $false
+        $verified = $false
+
+        if (Test-InstallDirCandidate $current) {
+            $installAttempted = $true
+            $verified = [AswhInstallerUi]::TryWritePath($edit, $InstallHome, [ref]$before, [ref]$after, [ref]$setOk)
+            if ($verified) { $installVerified = $true }
+            $installDiag += "installEdit class=$className before=$before after=$after setOk=$setOk verified=$verified"
         }
-        elseif ($current.EndsWith('\androidstudio') -or $current.Contains('\android\android studio')) {
-            if ([AswhInstallerUi]::WriteIfDifferent($edit, $InstallHome)) { $installAligned = $true }
+        elseif (($current.ToLowerInvariant().Replace('/', '\')).Contains('\android\sdk') -or ($current.ToLowerInvariant().Replace('/', '\')).Contains('appdata\local\android')) {
+            $sdkAttempted = $true
+            $verified = [AswhInstallerUi]::TryWritePath($edit, $AndroidHome, [ref]$before, [ref]$after, [ref]$setOk)
+            if ($verified) { $sdkVerified = $true }
         }
-        elseif ($current.Contains('\android\sdk') -or $current.Contains('appdata\local\android')) {
-            if ([AswhInstallerUi]::WriteIfDifferent($edit, $AndroidHome)) { $sdkAligned = $true }
-        }
-        elseif ($current.EndsWith('\.android') -or $current.Contains('\.android\\')) {
-            if ([AswhInstallerUi]::WriteIfDifferent($edit, $AndroidUserHome)) { $userAligned = $true }
+        elseif (($current.ToLowerInvariant().Replace('/', '\')).EndsWith('\.android')) {
+            $userAttempted = $true
+            $verified = [AswhInstallerUi]::TryWritePath($edit, $AndroidUserHome, [ref]$before, [ref]$after, [ref]$setOk)
+            if ($verified) { $userVerified = $true }
         }
     }
 
-    if ($editList.Count -eq 1) {
-        if ([AswhInstallerUi]::WriteIfDifferent($editList[0], $InstallHome)) { $installAligned = $true }
+    $installCandidates = @($editList | Where-Object {
+        Test-InstallDirCandidate ([AswhInstallerUi]::ReadText($_))
+    })
+    if (-not $installVerified -and $installCandidates.Count -gt 0) {
+        $edit = $installCandidates[0]
+        $installAttempted = $true
+        $before = $null
+        $after = $null
+        $setOk = $false
+        $verified = [AswhInstallerUi]::TryWritePath($edit, $InstallHome, [ref]$before, [ref]$after, [ref]$setOk)
+        if ($verified) { $installVerified = $true }
+        $installDiag += "candidateEdit before=$before after=$after setOk=$setOk verified=$verified"
+    }
+    elseif (-not $installVerified -and $editList.Count -eq 1) {
+        $edit = $editList[0]
+        $installAttempted = $true
+        $before = $null
+        $after = $null
+        $setOk = $false
+        $verified = [AswhInstallerUi]::TryWritePath($edit, $InstallHome, [ref]$before, [ref]$after, [ref]$setOk)
+        if ($verified) { $installVerified = $true }
+        $installDiag += "singleEdit before=$before after=$after setOk=$setOk verified=$verified"
     }
     elseif ($editList.Count -eq 2) {
-        if ([AswhInstallerUi]::WriteIfDifferent($editList[0], $AndroidHome)) { $sdkAligned = $true }
-        if ([AswhInstallerUi]::WriteIfDifferent($editList[1], $AndroidUserHome)) { $userAligned = $true }
+        if (-not $sdkVerified) {
+            $sdkAttempted = $true
+            $before = $null; $after = $null; $setOk = $false
+            if ([AswhInstallerUi]::TryWritePath($editList[0], $AndroidHome, [ref]$before, [ref]$after, [ref]$setOk)) {
+                $sdkVerified = $true
+            }
+        }
+        if (-not $userVerified) {
+            $userAttempted = $true
+            $before = $null; $after = $null; $setOk = $false
+            if ([AswhInstallerUi]::TryWritePath($editList[1], $AndroidUserHome, [ref]$before, [ref]$after, [ref]$setOk)) {
+                $userVerified = $true
+            }
+        }
     }
 }
 
 @{
     foundInstallerWindow = $foundWindow
-    installDirAligned = $installAligned
-    sdkEditAligned = $sdkAligned
-    userHomeEditAligned = $userAligned
+    installDirAligned = $installVerified
+    installDirVerified = $installVerified
+    installDirAttempted = $installAttempted
+    sdkEditAligned = $sdkVerified
+    userHomeEditAligned = $userVerified
+    installDiagnostics = ($installDiag -join ' | ')
 } | ConvertTo-Json -Compress

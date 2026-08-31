@@ -52,14 +52,22 @@ class AsFirstRunSdkConfig {
   }
 
   Future<bool> isInstallSuccessful() async {
-    final home = installHome.trim();
-    if (home.isEmpty) return false;
-    final productInfo = File('$home\\product-info.json');
-    if (productInfo.existsSync()) return true;
+    return (await resolveInstallHome()) != null;
+  }
 
+  /// 优先 AS_INSTALL_HOME，其次注册表 Path。
+  Future<String?> resolveInstallHome() async {
+    final home = installHome.trim().replaceAll(RegExp(r'[\\/]+$'), '');
+    if (home.isNotEmpty &&
+        File('$home\\product-info.json').existsSync()) {
+      return home;
+    }
     final fromReg = await _readRegistryInstallPath();
-    if (fromReg == null || fromReg.isEmpty) return false;
-    return File('$fromReg\\product-info.json').existsSync();
+    if (fromReg == null || fromReg.isEmpty) return null;
+    if (File('$fromReg\\product-info.json').existsSync()) {
+      return fromReg;
+    }
+    return null;
   }
 
   Future<String?> readDataDirectoryName() async {
