@@ -231,18 +231,17 @@ class InstallerPathInterceptor {
     required bool resume,
     int? installerExitCode,
   }) async {
-    _emit(
-      const InstallerInterceptStatus(
-        phase: InstallerInterceptPhase.installerFinished,
-        message: '安装向导已关闭，正在验证安装结果…',
-      ),
-    );
-
     final writer = AsFirstRunSdkConfig(
       installHome: installHome,
       androidHome: androidHome,
     );
-    final resolvedHome = await writer.resolveInstallHome();
+    _emit(
+      const InstallerInterceptStatus(
+        phase: InstallerInterceptPhase.installerFinished,
+        message: '安装向导已关闭，正在验证安装结果（最多 20 秒）…',
+      ),
+    );
+    final resolvedHome = await writer.resolveInstallHomeWithRetry();
     final installOk = resolvedHome != null;
 
     if (!installOk) {

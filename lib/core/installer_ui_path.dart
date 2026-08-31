@@ -30,50 +30,40 @@ class InstallerUiPath {
     }
 
     final scriptPath = await resolveAlignInstallerPathsScript();
-    final result = await Process.run(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        scriptPath,
-        '-InstallHome',
-        installHome,
-        '-AndroidHome',
-        androidHome,
-        '-AndroidUserHome',
-        androidUserHome,
-      ],
-      stdoutEncoding: utf8,
-      stderrEncoding: utf8,
-    );
-
-    if (result.exitCode != 0) {
-      return const InstallerUiAlignResult(
-        installDirAligned: false,
-        installDirVerified: false,
-        sdkEditAligned: false,
-        userHomeEditAligned: false,
-        foundInstallerWindow: false,
-        visibleInstallPath: '',
-      );
-    }
-
-    final stdout = (result.stdout as String? ?? '').replaceFirst('\uFEFF', '').trim();
-    if (stdout.isEmpty) {
-      return const InstallerUiAlignResult(
-        installDirAligned: false,
-        installDirVerified: false,
-        sdkEditAligned: false,
-        userHomeEditAligned: false,
-        foundInstallerWindow: false,
-        visibleInstallPath: '',
-      );
-    }
-
     try {
-      final json = jsonDecode(stdout) as Map<String, dynamic>;
+      final result = await Process.run(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          scriptPath,
+          '-InstallHome',
+          installHome,
+          '-AndroidHome',
+          androidHome,
+          '-AndroidUserHome',
+          androidUserHome,
+        ],
+      );
+
+      if (result.exitCode != 0) {
+        return _emptyResult();
+      }
+
+      final stdout = _decodeStdout(result.stdout).replaceFirst('\uFEFF', '').trim();
+      if (stdout.isEmpty) {
+        return _emptyResult();
+      }
+
+      // 只取最后一行 JSON（避免 Add-Type 等污染 stdout）
+      final jsonLine = stdout.split(RegExp(r'\r?\n')).lastWhere(
+        (line) => line.trim().startsWith('{'),
+        orElse: () => stdout,
+      );
+
+      final json = jsonDecode(jsonLine) as Map<String, dynamic>;
       return InstallerUiAlignResult(
         installDirAligned: json['installDirAligned'] == true,
         installDirVerified: json['installDirVerified'] == true,
@@ -84,15 +74,26 @@ class InstallerUiPath {
         diagnostics: json['installDiagnostics']?.toString() ?? '',
       );
     } catch (_) {
-      return const InstallerUiAlignResult(
-        installDirAligned: false,
-        installDirVerified: false,
-        sdkEditAligned: false,
-        userHomeEditAligned: false,
-        foundInstallerWindow: false,
-        visibleInstallPath: '',
-      );
+      return _emptyResult();
     }
+  }
+
+  static InstallerUiAlignResult _emptyResult() {
+    return const InstallerUiAlignResult(
+      installDirAligned: false,
+      installDirVerified: false,
+      sdkEditAligned: false,
+      userHomeEditAligned: false,
+      foundInstallerWindow: false,
+      visibleInstallPath: '',
+    );
+  }
+
+  static String _decodeStdout(Object? raw) {
+    if (raw is List<int>) {
+      return utf8.decode(raw, allowMalformed: true);
+    }
+    return (raw as String? ?? '');
   }
 }
 

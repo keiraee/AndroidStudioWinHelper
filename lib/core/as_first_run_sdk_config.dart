@@ -58,16 +58,36 @@ class AsFirstRunSdkConfig {
   /// 优先 AS_INSTALL_HOME，其次注册表 Path。
   Future<String?> resolveInstallHome() async {
     final home = installHome.trim().replaceAll(RegExp(r'[\\/]+$'), '');
-    if (home.isNotEmpty &&
-        File('$home\\product-info.json').existsSync()) {
+    if (home.isNotEmpty && _isValidInstallTree(home)) {
       return home;
     }
     final fromReg = await _readRegistryInstallPath();
-    if (fromReg == null || fromReg.isEmpty) return null;
-    if (File('$fromReg\\product-info.json').existsSync()) {
+    if (fromReg != null && _isValidInstallTree(fromReg)) {
       return fromReg;
     }
     return null;
+  }
+
+  /// 安装器退出后文件/注册表可能延迟就绪，轮询等待。
+  Future<String?> resolveInstallHomeWithRetry({
+    Duration timeout = const Duration(seconds: 20),
+    Duration interval = const Duration(seconds: 1),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      final home = await resolveInstallHome();
+      if (home != null) return home;
+      await Future<void>.delayed(interval);
+    }
+    return null;
+  }
+
+  static bool _isValidInstallTree(String home) {
+    final root = home.trim().replaceAll(RegExp(r'[\\/]+$'), '');
+    if (root.isEmpty) return false;
+    if (File('$root\\product-info.json').existsSync()) return true;
+    if (File('$root\\bin\\studio64.exe').existsSync()) return true;
+    return File('$root\\bin\\studio.exe').existsSync();
   }
 
   Future<String?> readDataDirectoryName() async {
