@@ -402,20 +402,24 @@ class InstallerPathInterceptor {
       if (result.diagnostics.isNotEmpty) {
         _logThrottled('UI 诊断: ${result.diagnostics}');
       }
-      if (result.installDirVerified && !_installDirAlignedReported) {
-        _installDirAlignedReported = true;
-        _emit(
-          InstallerInterceptStatus(
-            phase: InstallerInterceptPhase.alignedInstallDir,
-            message: '已对齐安装目录 → $installHome',
-          ),
-        );
-        _log('安装目录 UI 已验证: $installHome');
-      } else if (result.installDirAligned && !result.installDirVerified) {
-        _logThrottled('安装目录 UI 写入未生效（已用 /D= 启动）');
-      } else if (result.installDirVerified) {
-        _logThrottled('纠正安装目录为 $installHome');
-      }
+        if (result.installDirVerified && !_installDirAlignedReported) {
+          _installDirAlignedReported = true;
+          _emit(
+            InstallerInterceptStatus(
+              phase: InstallerInterceptPhase.alignedInstallDir,
+              message: '已对齐安装目录 → $installHome',
+            ),
+          );
+          _log('安装目录 UI 已验证: $installHome');
+        } else if (!result.installDirVerified &&
+            result.foundInstallerWindow &&
+            result.visibleInstallPath.isNotEmpty) {
+          _logThrottled(
+            '安装目录仍为 ${result.visibleInstallPath}，继续尝试纠正为 $installHome',
+          );
+        } else if (result.installDirVerified) {
+          _logThrottled('纠正安装目录为 $installHome');
+        }
 
       if (result.sdkEditAligned || result.userHomeEditAligned) {
         _logThrottled(

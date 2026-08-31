@@ -532,6 +532,26 @@ class DownloadManager extends ChangeNotifier {
       '${args.isEmpty ? '' : ' ${args.join(' ')}'}',
     );
     final workingDirectory = File(task.filePath).parent.path;
+
+    // 通过 cmd 启动，确保 /D= 传到 NSIS（避免 stub 丢参数）
+    if (home != null && home.isNotEmpty) {
+      final launcher = File(
+        '${Directory.systemTemp.path}\\aswh_install_${DateTime.now().millisecondsSinceEpoch}.cmd',
+      );
+      await launcher.writeAsString(
+        '@echo off\r\n'
+        'cd /d "$workingDirectory"\r\n'
+        '"${task.filePath}" /D=$home\r\n'
+        'exit /b %ERRORLEVEL%\r\n',
+      );
+      return Process.start(
+        'cmd.exe',
+        ['/c', launcher.path],
+        workingDirectory: workingDirectory,
+        mode: ProcessStartMode.normal,
+      );
+    }
+
     return Process.start(
       task.filePath,
       args,

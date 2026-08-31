@@ -25,6 +25,7 @@ class InstallerUiPath {
         sdkEditAligned: false,
         userHomeEditAligned: false,
         foundInstallerWindow: false,
+        visibleInstallPath: '',
       );
     }
 
@@ -55,6 +56,7 @@ class InstallerUiPath {
         sdkEditAligned: false,
         userHomeEditAligned: false,
         foundInstallerWindow: false,
+        visibleInstallPath: '',
       );
     }
 
@@ -66,6 +68,7 @@ class InstallerUiPath {
         sdkEditAligned: false,
         userHomeEditAligned: false,
         foundInstallerWindow: false,
+        visibleInstallPath: '',
       );
     }
 
@@ -73,11 +76,11 @@ class InstallerUiPath {
       final json = jsonDecode(stdout) as Map<String, dynamic>;
       return InstallerUiAlignResult(
         installDirAligned: json['installDirAligned'] == true,
-        installDirVerified: json['installDirVerified'] == true ||
-            json['installDirAligned'] == true,
+        installDirVerified: json['installDirVerified'] == true,
         sdkEditAligned: json['sdkEditAligned'] == true,
         userHomeEditAligned: json['userHomeEditAligned'] == true,
         foundInstallerWindow: json['foundInstallerWindow'] == true,
+        visibleInstallPath: json['visibleInstallPath']?.toString() ?? '',
         diagnostics: json['installDiagnostics']?.toString() ?? '',
       );
     } catch (_) {
@@ -87,6 +90,7 @@ class InstallerUiPath {
         sdkEditAligned: false,
         userHomeEditAligned: false,
         foundInstallerWindow: false,
+        visibleInstallPath: '',
       );
     }
   }
@@ -99,6 +103,7 @@ class InstallerUiAlignResult {
     required this.sdkEditAligned,
     required this.userHomeEditAligned,
     required this.foundInstallerWindow,
+    this.visibleInstallPath = '',
     this.diagnostics = '',
   });
 
@@ -107,6 +112,7 @@ class InstallerUiAlignResult {
   final bool sdkEditAligned;
   final bool userHomeEditAligned;
   final bool foundInstallerWindow;
+  final String visibleInstallPath;
   final String diagnostics;
 
   bool get anyAligned =>

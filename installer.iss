@@ -3,7 +3,7 @@
 ; 下载 Inno Setup: https://jrsoftware.org/isdl.php
 
 #define MyAppName "AndroidStudioWinHelper"
-#define MyAppVersion "1.4.1"
+#define MyAppVersion "1.4.2"
 #define MyAppPublisher "ASWH"
 #define MyAppExeName "androidstudiowinhelper.exe"
 

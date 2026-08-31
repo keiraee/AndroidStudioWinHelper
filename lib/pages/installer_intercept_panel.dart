@@ -137,6 +137,17 @@ class _InstallerInterceptDialogState extends State<_InstallerInterceptDialog> {
                 color: colorScheme.onSurfaceVariant,
               ),
             ),
+            if (_status.phase == InstallerInterceptPhase.alignedInstallDir)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  '请确认安装向导中的路径已变为目标目录后再点 Next。',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
           ],
         ),
       ),
