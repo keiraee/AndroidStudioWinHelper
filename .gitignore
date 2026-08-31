@@ -49,3 +49,9 @@ app.*.map.json
 .md/
 /test/
 env_config_cache.json
+
+# 发行安装包不进仓库（只保留打包脚本和 VC++ 运行库）
+installer/AndroidStudioWinHelper_*_Setup.exe
+
+# 安装包只作本地发版产物，不进仓库
+installer/AndroidStudioWinHelper_*_Setup.exe
