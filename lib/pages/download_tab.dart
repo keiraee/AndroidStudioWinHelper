@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -18,7 +20,10 @@ import 'package:androidstudiowinhelper/core/studio_version_service.dart';
 import 'package:androidstudiowinhelper/core/version/install_upgrade.dart';
 import 'package:androidstudiowinhelper/core/version/version_catalog.dart';
 import 'package:androidstudiowinhelper/pages/download_progress_card.dart';
+import 'package:androidstudiowinhelper/core/as_first_run_sdk_config.dart';
+import 'package:androidstudiowinhelper/core/installer_path_interceptor.dart';
 import 'package:androidstudiowinhelper/pages/install_env_wizard.dart';
+import 'package:androidstudiowinhelper/pages/installer_intercept_panel.dart';
 import 'package:androidstudiowinhelper/pages/shared_widgets.dart';
 
 class DownloadTab extends StatefulWidget {
@@ -208,10 +213,35 @@ class _DownloadTabState extends State<DownloadTab> {
   }
 
   Future<void> _runInstallerKey(String versionKey) async {
-    final prepared = await showInstallEnvWizard(context);
-    if (!mounted || !prepared) return;
+    final paths = await showInstallEnvWizard(context);
+    if (!mounted || paths == null) return;
+
+    final task = _downloadManager.taskFor(versionKey);
+    if (task == null || task.state != DownloadState.completed) return;
+
+    if (InstallerPathInterceptor.hasActive) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已有安装路径对齐任务在运行')),
+      );
+      return;
+    }
+
     try {
-      await _downloadManager.runInstaller(versionKey);
+      final process = await _downloadManager.runInstaller(versionKey);
+      if (!mounted || process == null) return;
+
+      final resolved = await AsFirstRunSdkConfig.resolvePaths(preferred: paths);
+      final interceptor = await InstallerPathInterceptor.start(
+        workingDirectory: File(task.filePath).parent.path,
+        paths: resolved,
+        installerProcess: process,
+      );
+
+      if (!mounted) return;
+      await showInstallerInterceptPanel(
+        context: context,
+        interceptor: interceptor,
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(

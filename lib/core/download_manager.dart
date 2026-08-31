@@ -509,17 +509,19 @@ class DownloadManager extends ChangeNotifier {
     await Process.start('explorer', ['/select,', task.filePath]);
   }
 
-  Future<void> runInstaller(String versionKey) async {
+  Future<Process?> runInstaller(String versionKey) async {
     final task = _tasks[versionKey];
-    if (task == null || task.state != DownloadState.completed) return;
+    if (task == null || task.state != DownloadState.completed) return null;
     LogManager.instance.write(
       'Download',
       '[$versionKey] 启动安装程序: ${task.filePath}',
     );
-    await Process.start(
+    final workingDirectory = File(task.filePath).parent.path;
+    return Process.start(
       task.filePath,
       const [],
-      mode: ProcessStartMode.detached,
+      workingDirectory: workingDirectory,
+      mode: ProcessStartMode.normal,
     );
   }
 

@@ -69,6 +69,14 @@ Future<String> resolveCheckEmulatorScript() {
   );
 }
 
+Future<String> resolveAlignInstallerPathsScript() {
+  return resolveScript(
+    fileName: 'align-installer-paths.ps1',
+    assetPath: 'scripts/align-installer-paths.ps1',
+    envVar: 'ASWH_ALIGN_INSTALLER_SCRIPT',
+  );
+}
+
 Iterable<String> _projectCandidates(String fileName) sync* {
   final cwd = Directory.current.path;
   yield _join(cwd, 'scripts/$fileName');

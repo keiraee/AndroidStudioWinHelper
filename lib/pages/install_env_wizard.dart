@@ -8,17 +8,17 @@ import 'package:androidstudiowinhelper/core/env_path_manager.dart';
 import 'package:androidstudiowinhelper/core/format_utils.dart';
 import 'package:androidstudiowinhelper/core/install_env_defaults.dart';
 
-Future<bool> showInstallEnvWizard(
+Future<Map<String, String>?> showInstallEnvWizard(
   BuildContext context, {
   EnvPathManager? envManager,
 }) async {
-  final result = await showDialog<bool>(
+  final result = await showDialog<Map<String, String>?>(
     context: context,
     barrierDismissible: false,
     builder: (ctx) =>
         InstallEnvWizardDialog(envManager: envManager ?? EnvPathManager()),
   );
-  return result == true;
+  return result;
 }
 
 class InstallEnvWizardDialog extends StatefulWidget {
@@ -305,7 +305,7 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
         });
         return;
       }
-      Navigator.of(context).pop(true);
+      Navigator.of(context).pop(paths);
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString());
@@ -363,7 +363,7 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
         ),
         actions: [
           TextButton(
-            onPressed: _busy ? null : () => Navigator.pop(context, false),
+            onPressed: _busy ? null : () => Navigator.pop(context, null),
             child: const Text('取消'),
           ),
           if (_step == 1)
