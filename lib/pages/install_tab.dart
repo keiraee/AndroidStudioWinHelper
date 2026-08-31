@@ -92,6 +92,7 @@ class _InstallTabState extends State<InstallTab> {
               children: [
                 Tooltip(
                   message: '全盘搜索 studio.exe，可能需要数分钟',
+                  excludeFromSemantics: true,
                   child: FilterChip(
                     label: const Text('深度扫描'),
                     selected: _deepScan,
@@ -112,7 +113,7 @@ class _InstallTabState extends State<InstallTab> {
           ),
           const SizedBox(height: 16),
           if (_loading && _progress != null)
-            ProgressPanel(progress: _progress!),
+            ExcludeSemantics(child: ProgressPanel(progress: _progress!)),
           if (_error != null) ErrorPanel(message: _error!),
           Expanded(child: _buildResult()),
         ],
@@ -122,9 +123,7 @@ class _InstallTabState extends State<InstallTab> {
 
   Widget _buildResult() {
     if (_result == null && !_loading) {
-      return const EmptyPanel(
-        hint: '正在查找本机 Android Studio。也可点击右上角「开始检测」手动重试。',
-      );
+      return const EmptyPanel(hint: '正在查找本机 Android Studio。也可点击右上角「开始检测」手动重试。');
     }
 
     if (_result == null) return const SizedBox.shrink();
@@ -151,7 +150,8 @@ class _InstallTabState extends State<InstallTab> {
             _InstallCard(
               index: i + 1,
               install: _result!.installs[i],
-              isSelected: identical(_result!.selected, _result!.installs[i]) ||
+              isSelected:
+                  identical(_result!.selected, _result!.installs[i]) ||
                   (_result!.selected?.path == _result!.installs[i].path),
               selectionReason: _result!.selectionReason,
             ),
@@ -193,7 +193,9 @@ class _SectionLabel extends StatelessWidget {
       child: Row(
         children: [
           Icon(
-            emphasize ? Icons.warning_amber_rounded : Icons.check_circle_outline,
+            emphasize
+                ? Icons.warning_amber_rounded
+                : Icons.check_circle_outline,
             size: 18,
             color: emphasize ? colorScheme.error : colorScheme.primary,
           ),
@@ -205,14 +207,14 @@ class _SectionLabel extends StatelessWidget {
                 Text(
                   '$title（$count）',
                   style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        color: emphasize ? colorScheme.error : null,
-                      ),
+                    color: emphasize ? colorScheme.error : null,
+                  ),
                 ),
                 Text(
                   subtitle,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
+                    color: colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ],
             ),
@@ -249,8 +251,10 @@ class _InstallCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final sources =
-        install.source.split('；').where((s) => s.trim().isNotEmpty).toList();
+    final sources = install.source
+        .split('；')
+        .where((s) => s.trim().isNotEmpty)
+        .toList();
     final colorScheme = Theme.of(context).colorScheme;
 
     return Card(
@@ -272,8 +276,10 @@ class _InstallCard extends StatelessWidget {
                 if (_androidHomeActive) ...[
                   const SizedBox(width: 8),
                   Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
                     decoration: BoxDecoration(
                       color: colorScheme.primaryContainer,
                       borderRadius: BorderRadius.circular(8),
@@ -281,9 +287,9 @@ class _InstallCard extends StatelessWidget {
                     child: Text(
                       'ANDROID_HOME',
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: colorScheme.onPrimaryContainer,
-                            fontWeight: FontWeight.w600,
-                          ),
+                        color: colorScheme.onPrimaryContainer,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ],
@@ -295,8 +301,8 @@ class _InstallCard extends StatelessWidget {
                     Text(
                       selectionReason!.label,
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
+                        color: colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ],
                 ],
@@ -317,8 +323,8 @@ class _InstallCard extends StatelessWidget {
               Text(
                 '检测来源',
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
               const SizedBox(height: 6),
               Wrap(
@@ -345,10 +351,7 @@ String _normalizeWindowsPath(String path) {
 }
 
 class _ResidueCard extends StatelessWidget {
-  const _ResidueCard({
-    required this.index,
-    required this.residue,
-  });
+  const _ResidueCard({required this.index, required this.residue});
 
   final int index;
   final AndroidStudioResidue residue;
@@ -372,31 +375,34 @@ class _ResidueCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(Icons.delete_forever_outlined,
-                    size: 18, color: colorScheme.error),
+                Icon(
+                  Icons.delete_forever_outlined,
+                  size: 18,
+                  color: colorScheme.error,
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     '[$index] ${residue.name}',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          color: colorScheme.error,
-                        ),
+                    style: Theme.of(
+                      context,
+                    ).textTheme.titleSmall?.copyWith(color: colorScheme.error),
                   ),
                 ),
                 Text(
                   residue.kindLabel,
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: colorScheme.error,
-                      ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelSmall?.copyWith(color: colorScheme.error),
                 ),
               ],
             ),
             const SizedBox(height: 10),
             Text(
               residue.reason,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 10),
             if (residue.path.isNotEmpty)
@@ -411,9 +417,9 @@ class _ResidueCard extends StatelessWidget {
                   onPressed: () async {
                     await _copy(residue.registryKey);
                     if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('已复制注册表路径')),
-                    );
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(const SnackBar(content: Text('已复制注册表路径')));
                   },
                   icon: const Icon(Icons.copy, size: 16),
                   label: const Text('复制注册表路径'),
@@ -446,14 +452,18 @@ class _SourceChip extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.play_circle_fill, size: 14, color: Colors.green.shade700),
+            Icon(
+              Icons.play_circle_fill,
+              size: 14,
+              color: Colors.green.shade700,
+            ),
             const SizedBox(width: 4),
             Text(
               label,
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Colors.green.shade700,
-                    fontWeight: FontWeight.w600,
-                  ),
+                color: Colors.green.shade700,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ],
         ),
@@ -465,14 +475,9 @@ class _SourceChip extends StatelessWidget {
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Theme.of(context).colorScheme.outlineVariant,
-        ),
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
       ),
-      child: Text(
-        label,
-        style: Theme.of(context).textTheme.labelSmall,
-      ),
+      child: Text(label, style: Theme.of(context).textTheme.labelSmall),
     );
   }
 }

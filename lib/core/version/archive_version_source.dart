@@ -1,3 +1,5 @@
+import 'dart:isolate';
+
 import 'package:androidstudiowinhelper/core/log_manager.dart';
 import 'package:androidstudiowinhelper/core/models/studio_version.dart';
 import 'package:http/http.dart' as http;
@@ -32,7 +34,7 @@ class ArchiveVersionSource {
 
         LogManager.instance.write('VersionService', '抓取归档 iframe: $frameUrl');
         final frameHtml = await _getHtml(frameUrl, timeoutSeconds: 60);
-        final versions = parseArchiveFrame(frameHtml);
+        final versions = await parseArchiveFrameOffUi(frameHtml);
         LogManager.instance.write(
           'VersionService',
           '归档解析到 ${versions.length} 个 Windows 安装包',
@@ -86,7 +88,18 @@ class ArchiveVersionSource {
     return '${pageUri.scheme}://${pageUri.host}/$raw';
   }
 
-  /// 解析 iframe HTML 中每个 expandable section 的 Windows exe + SHA-256。
+  /// 归档 HTML 约 1MB、六百多段，放到后台 isolate，避免卡住界面。
+  static Future<List<StudioVersion>> parseArchiveFrameOffUi(String html) async {
+    final maps = await Isolate.run(
+      () => parseArchiveFrame(html).map((v) => v.toJson()).toList(),
+    );
+    return [for (final map in maps) StudioVersion.fromJson(map)];
+  }
+
+  /// 解析 iframe HTML 中每个 expandable section 的 Windows 安装包 + SHA-256。
+  ///
+  /// 2020 年起是 `Codename | 2024.2.1` + `android-studio-*-windows.exe`；
+  /// 更早是 `Android Studio 3.6.3` / `2.3.3`，链接可能是 ide/bundle exe 或 zip。
   static List<StudioVersion> parseArchiveFrame(String html) {
     final versions = <StudioVersion>[];
     final sectionRe = RegExp(
@@ -99,7 +112,7 @@ class ArchiveVersionSource {
       final body = section.group(2) ?? '';
 
       final titleMatch = RegExp(
-        r'class="expand-control"[^>]*>([\s\S]*?)</p>',
+        r'class="expand-control"[^>]*>([\s\S]*?)</(?:p|h[1-6]|div|button|span)>',
         caseSensitive: false,
       ).firstMatch(body);
       if (titleMatch == null) continue;
@@ -109,23 +122,11 @@ class ArchiveVersionSource {
           .replaceAll(RegExp(r'<[^>]+>'), ' ')
           .replaceAll(RegExp(r'\s+'), ' ')
           .trim();
-      // "Android Studio Quail 3 | 2026.1.3 July 30, 2026"
-      final nameMatch = RegExp(
-        r'Android Studio\s+(.+?)\s*\|\s*([\d.]+(?:\s+[A-Za-z]+\s*\d+)?)',
-        caseSensitive: false,
-      ).firstMatch(titleText);
-      if (nameMatch == null) continue;
+      final parsed = parseTitle(titleText);
+      if (parsed == null) continue;
 
-      final codename = nameMatch.group(1)!.trim();
-      final versionPart = nameMatch.group(2)!.trim();
-      final displayVersion = '$codename | $versionPart';
-
-      final exeMatch = RegExp(
-        r'Windows\s*\(64-bit\):\s*<a\s+href="(https://[^"]+android-studio[^"]*windows\.exe)"',
-        caseSensitive: false,
-      ).firstMatch(body);
-      if (exeMatch == null) continue;
-      final url = exeMatch.group(1)!;
+      final url = extractWindowsDownloadUrl(body);
+      if (url == null) continue;
 
       final fileName = url.split('/').last;
       final shaMatch = RegExp(
@@ -134,14 +135,15 @@ class ArchiveVersionSource {
       ).firstMatch(body);
       final sha256 = shaMatch?.group(1)?.toLowerCase() ?? '';
 
-      final urlVerMatch = RegExp(r'/(\d+\.\d+\.\d+\.\d+)/').firstMatch(url);
+      final urlVerMatch =
+          RegExp(r'/(\d+\.\d+\.\d+(?:\.\d+)?)/').firstMatch(url);
       final downloadVersion = urlVerMatch?.group(1) ?? '';
 
-      final channelInfo = _classifyChannel(classHint, versionPart);
+      final channelInfo = classifyChannel(classHint, parsed.versionPart);
 
       versions.add(StudioVersion(
-        version: displayVersion,
-        codename: codename,
+        version: parsed.display,
+        codename: parsed.codename,
         buildNumber: downloadVersion,
         channel: channelInfo.$1,
         channelLabel: channelInfo.$2,
@@ -153,26 +155,104 @@ class ArchiveVersionSource {
       ));
     }
 
-    // 去重：同一 downloadUrl 只保留一条
     final seen = <String>{};
     return versions.where((v) => seen.add(v.downloadUrl)).toList();
   }
 
-  static (String channel, String label) _classifyChannel(
+  static ({String codename, String versionPart, String display})? parseTitle(
+    String titleText,
+  ) {
+    final cleaned = titleText.trim();
+    if (!RegExp(r'^Android Studio\b', caseSensitive: false)
+        .hasMatch(cleaned)) {
+      return null;
+    }
+    var rest = cleaned
+        .replaceFirst(RegExp(r'^Android Studio\s*', caseSensitive: false), '')
+        .trim();
+    rest = stripReleaseDate(rest);
+    if (rest.isEmpty) return null;
+    final pipe = rest.indexOf('|');
+    if (pipe >= 0) {
+      final codename = rest.substring(0, pipe).trim();
+      final versionPart = stripReleaseDate(rest.substring(pipe + 1).trim());
+      if (codename.isEmpty || versionPart.isEmpty) return null;
+      return (
+        codename: codename,
+        versionPart: versionPart,
+        display: '$codename | $versionPart',
+      );
+    }
+    return (codename: rest, versionPart: rest, display: rest);
+  }
+
+  /// 归档标题末尾的 `August 10, 2026` 是发布日，不是版本号。
+  static String stripReleaseDate(String text) {
+    return text
+        .replaceFirst(
+          RegExp(
+            r'\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\s*$',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .trim();
+  }
+
+  static String? extractWindowsDownloadUrl(String body) {
+    const patterns = [
+      r'Windows\s*\((?:64-bit|64\s*bit)\)\s*:\s*<a\s+href="(https://[^"]+windows\.exe)"',
+      r'Windows\s*:\s*<a\s+href="(https://[^"]+windows\.exe)"',
+      r'href="(https://[^"]*android-studio[^"]*windows\.exe)"',
+      r'Windows\s*\((?:64-bit|64\s*bit)\)\s*:\s*<a\s+href="(https://[^"]+windows\.zip)"',
+      r'Windows\s*:\s*<a\s+href="(https://[^"]+windows\.zip)"',
+      r'href="(https://[^"]*android-studio[^"]*windows\.zip)"',
+    ];
+    for (final pattern in patterns) {
+      final match = RegExp(pattern, caseSensitive: false).firstMatch(body);
+      if (match != null) return match.group(1);
+    }
+    return null;
+  }
+
+  /// 对照官网归档标题关键字。渠道按 Android Studio 更新通道归并：
+  /// Canary/Preview → Canary，Beta/RC → Beta，Patch/正式版 → Stable。
+  /// 必须按词边界匹配，否则 `March` 会命中 `rc`。
+  static (String channel, String label) classifyChannel(
     String classHint,
     String versionPart,
   ) {
-    final lower = versionPart.toLowerCase();
-    if (lower.contains('canary')) return ('eap', 'Canary');
-    if (lower.contains('rc')) return ('beta', 'RC');
-    if (lower.contains('beta')) return ('beta', 'Beta');
-    if (lower.contains('patch')) return ('release', 'Patch');
-    if (lower.contains('nightly') || lower.contains('dev')) {
+    if (_wordCanary.hasMatch(versionPart)) return ('eap', 'Canary');
+    if (_wordPreview.hasMatch(versionPart)) return ('eap', 'Preview');
+    if (_wordRc.hasMatch(versionPart)) return ('beta', 'RC');
+    if (_wordBeta.hasMatch(versionPart)) return ('beta', 'Beta');
+    if (_wordPatch.hasMatch(versionPart)) return ('release', 'Patch');
+    if (_wordNightly.hasMatch(versionPart) || _wordDev.hasMatch(versionPart)) {
       return ('milestone', 'Dev');
     }
-    if (classHint.contains('stable')) return ('release', 'Stable');
+
+    final tokens = classHint
+        .toLowerCase()
+        .split(RegExp(r'[^a-z0-9]+'))
+        .where((t) => t.isNotEmpty)
+        .toSet();
+    if (tokens.contains('canary') || tokens.contains('eap')) {
+      return ('eap', 'Canary');
+    }
+    if (tokens.contains('beta')) return ('beta', 'Beta');
+    if (tokens.contains('dev') || tokens.contains('milestone')) {
+      return ('milestone', 'Dev');
+    }
     return ('release', 'Stable');
   }
+
+  static final _wordCanary = RegExp(r'\bcanary\b', caseSensitive: false);
+  static final _wordPreview = RegExp(r'\bpreview\b', caseSensitive: false);
+  static final _wordRc = RegExp(r'\brc\b', caseSensitive: false);
+  static final _wordBeta = RegExp(r'\bbeta\b', caseSensitive: false);
+  static final _wordPatch = RegExp(r'\bpatch\b', caseSensitive: false);
+  static final _wordNightly = RegExp(r'\bnightly\b', caseSensitive: false);
+  static final _wordDev = RegExp(r'\bdev\b', caseSensitive: false);
 }
 
 class ArchiveFetchResult {

@@ -16,7 +16,7 @@ class UrlGuesser {
     final codename = v.codename.toLowerCase().replaceAll(' ', '');
     if (codename.isEmpty) return null;
 
-    final base3 = _decodeBuildBase3(v.buildNumber);
+    final base3 = decodeBuildBase3(v.buildNumber);
     if (base3 == null) return null;
 
     final versionPart = v.version.split('|').length > 1
@@ -57,7 +57,7 @@ class UrlGuesser {
 
   /// 从 buildNumber 解码 3 段基础版本 (年.大.小)
   /// 如 AI-261.23567.138.2612 → seg4=2612 → 26=2026, 1=major, 2=minor → "2026.1.2"
-  static String? _decodeBuildBase3(String buildNumber) {
+  static String? decodeBuildBase3(String buildNumber) {
     final match = RegExp(r'(\d+)\.(\d+)\.(\d+)\.(\d+)').firstMatch(buildNumber);
     if (match == null) return null;
 
@@ -65,6 +65,7 @@ class UrlGuesser {
     if (seg4.length < 4) return null;
 
     final year = 2000 + int.parse(seg4[0]) * 10 + int.parse(seg4[1]);
+    if (year < 2014 || year > 2035) return null;
     final major = int.parse(seg4[2]);
     final minor = int.parse(seg4[3]);
 
@@ -73,7 +74,7 @@ class UrlGuesser {
 
   /// 从 buildNumber 解码 4 段 URL 版本号（兼容旧调用）
   static String? decodeBuildNumberToVersion(String buildNumber, String versionStr) {
-    final base3 = _decodeBuildBase3(buildNumber);
+    final base3 = decodeBuildBase3(buildNumber);
     if (base3 == null) return null;
 
     final versionPart = versionStr.split('|').length > 1

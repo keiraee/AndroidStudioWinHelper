@@ -13,7 +13,7 @@ typedef EnvProgressCallback = void Function(ScanProgress progress);
 
 class EnvPathManager {
   EnvPathManager({PowerShellRunner? runner})
-      : _runner = runner ?? PowerShellRunner(logTag: 'EnvPath');
+    : _runner = runner ?? PowerShellRunner(logTag: 'EnvPath');
 
   final PowerShellRunner _runner;
 
@@ -53,8 +53,10 @@ class EnvPathManager {
     return _elevatedWrite(
       scriptArgs: [
         '-Write',
-        '-VarName', variable,
-        '-Scope', scope,
+        '-VarName',
+        variable,
+        '-Scope',
+        scope,
         if (unset) '-Unset' else ...['-VarValue', value],
       ],
       createDir: createDir,
@@ -69,6 +71,50 @@ class EnvPathManager {
       scriptArgs: ['-Write', '-AppendPath', path],
       createDir: createDir,
     );
+  }
+
+  /// 选盘后提权创建 `{盘}:\Android`，确认该盘可写。
+  Future<EnvPathWriteResult> prepareAndroidRoot(String rootPath) {
+    return _elevatedWrite(
+      scriptArgs: ['-Write', '-PrepareRoot', '-RootPath', rootPath],
+    );
+  }
+
+  /// 一次提权写入多个系统环境变量并回读校验。
+  Future<EnvPathBatchWriteResult> writeBatch({
+    required Map<String, String> variables,
+    List<String> appendPath = const [],
+    bool createDir = true,
+  }) async {
+    if (!Platform.isWindows) {
+      throw UnsupportedError('环境变量写入仅支持 Windows。');
+    }
+    final payload = {
+      'createDir': createDir,
+      'variables': [
+        for (final e in variables.entries) {'name': e.key, 'value': e.value},
+      ],
+      'appendPath': appendPath,
+    };
+    final batchFile = File(
+      '${Directory.systemTemp.path}\\aswh_env_batch_${DateTime.now().millisecondsSinceEpoch}.json',
+    );
+    batchFile.writeAsStringSync(
+      const JsonEncoder().convert(payload),
+      flush: true,
+    );
+
+    try {
+      final raw = await _elevatedWriteRaw(
+        scriptArgs: ['-Write', '-BatchFile', batchFile.path],
+        createDir: false,
+      );
+      return EnvPathBatchWriteResult.fromJson(raw);
+    } finally {
+      try {
+        batchFile.deleteSync();
+      } catch (_) {}
+    }
   }
 
   /// 保存当前环境配置到缓存（写入前调用）
@@ -100,12 +146,14 @@ class EnvPathManager {
       try {
         // 备份时未设置：删除 ASWH 写入的 Machine 变量
         if (item.source == 'NotSet' || item.currentValue.isEmpty) {
-          results.add(await writeVariable(
-            variable: item.variable,
-            value: '',
-            unset: true,
-            scope: 'Machine',
-          ));
+          results.add(
+            await writeVariable(
+              variable: item.variable,
+              value: '',
+              unset: true,
+              scope: 'Machine',
+            ),
+          );
           continue;
         }
 
@@ -113,26 +161,32 @@ class EnvPathManager {
 
         // 原为 User：清掉可能被写成 Machine 的覆盖值，再恢复 User
         if (scope == 'User') {
-          results.add(await writeVariable(
-            variable: item.variable,
-            value: '',
-            unset: true,
-            scope: 'Machine',
-          ));
+          results.add(
+            await writeVariable(
+              variable: item.variable,
+              value: '',
+              unset: true,
+              scope: 'Machine',
+            ),
+          );
         }
 
-        results.add(await writeVariable(
-          variable: item.variable,
-          value: item.currentValue,
-          scope: scope,
-        ));
+        results.add(
+          await writeVariable(
+            variable: item.variable,
+            value: item.currentValue,
+            scope: scope,
+          ),
+        );
       } catch (error) {
-        results.add(EnvPathWriteResult(
-          success: false,
-          variable: item.variable,
-          value: item.currentValue,
-          error: error.toString(),
-        ));
+        results.add(
+          EnvPathWriteResult(
+            success: false,
+            variable: item.variable,
+            value: item.currentValue,
+            error: error.toString(),
+          ),
+        );
       }
     }
 
@@ -161,7 +215,33 @@ class EnvPathManager {
     _writeLock = completer.future;
 
     try {
-      return await _doElevatedWrite(scriptArgs: scriptArgs, createDir: createDir);
+      return await _doElevatedWrite(
+        scriptArgs: scriptArgs,
+        createDir: createDir,
+      );
+    } finally {
+      completer.complete();
+      _writeLock = null;
+    }
+  }
+
+  Future<Map<String, dynamic>> _elevatedWriteRaw({
+    required List<String> scriptArgs,
+    bool createDir = false,
+  }) async {
+    if (!Platform.isWindows) {
+      throw UnsupportedError('环境变量写入仅支持 Windows。');
+    }
+    while (_writeLock != null) {
+      await _writeLock;
+    }
+    final completer = Completer<void>();
+    _writeLock = completer.future;
+    try {
+      return await _doElevatedWriteJson(
+        scriptArgs: scriptArgs,
+        createDir: createDir,
+      );
     } finally {
       completer.complete();
       _writeLock = null;
@@ -172,24 +252,38 @@ class EnvPathManager {
     required List<String> scriptArgs,
     bool createDir = false,
   }) async {
+    final json = await _doElevatedWriteJson(
+      scriptArgs: scriptArgs,
+      createDir: createDir,
+    );
+    return EnvPathWriteResult.fromJson(json);
+  }
+
+  Future<Map<String, dynamic>> _doElevatedWriteJson({
+    required List<String> scriptArgs,
+    bool createDir = false,
+  }) async {
     final scriptPath = await resolveConfigEnvPathsScript();
     final scriptFile = File(scriptPath);
     if (!scriptFile.existsSync()) {
       throw StateError('未找到配置脚本：$scriptPath');
     }
 
-    final resultFile = '${Directory.systemTemp.path}\\aswh_env_result_${DateTime.now().millisecondsSinceEpoch}.json';
+    final resultFile =
+        '${Directory.systemTemp.path}\\aswh_env_result_${DateTime.now().millisecondsSinceEpoch}.json';
 
     final args = [
       ...scriptArgs,
       if (createDir) '-CreateDir',
-      '-ResultFile', resultFile,
+      '-ResultFile',
+      resultFile,
       '-Json',
     ];
 
     final result = await _runner.runElevated(
       scriptPath: scriptFile.absolute.path,
       extraArgs: args,
+      timeout: const Duration(seconds: 15),
     );
 
     // 读取结果文件
@@ -197,19 +291,21 @@ class EnvPathManager {
     if (!resultFileObj.existsSync()) {
       // 如果 runElevated 没有抛异常但结果文件不存在，用 result 的 jsonResult
       if (result.jsonResult != null) {
-        return EnvPathWriteResult.fromJson(result.jsonResult!);
+        return result.jsonResult!;
       }
       throw StateError('写入失败：未收到结果文件。');
     }
 
     try {
       final json = jsonDecode(resultFileObj.readAsStringSync());
-      if (json is Map<String, dynamic>) {
-        return EnvPathWriteResult.fromJson(json);
+      if (json is Map) {
+        return Map<String, dynamic>.from(json);
       }
       throw StateError('结果文件格式无效。');
     } finally {
-      try { resultFileObj.deleteSync(); } catch (_) {}
+      try {
+        resultFileObj.deleteSync();
+      } catch (_) {}
     }
   }
 
@@ -221,13 +317,17 @@ class EnvPathManager {
     // 优先用 jsonResult
     if (result.jsonResult != null) {
       final parsed = EnvPathConfigResult.fromJson(result.jsonResult!);
-      _log('解析成功: ${parsed.items.length} 个变量, ${parsed.pathEntries.length} 个 PATH 条目');
+      _log(
+        '解析成功: ${parsed.items.length} 个变量, ${parsed.pathEntries.length} 个 PATH 条目',
+      );
       return parsed;
     }
 
     // 回退：从 stdout 提取
     final stdoutText = result.stdout;
-    _log('stdout (前1000字符): ${stdoutText.length > 1000 ? stdoutText.substring(0, 1000) : stdoutText}');
+    _log(
+      'stdout (前1000字符): ${stdoutText.length > 1000 ? stdoutText.substring(0, 1000) : stdoutText}',
+    );
 
     const marker = '@@RESULT|';
     final startIdx = stdoutText.indexOf(marker);
@@ -263,7 +363,9 @@ class EnvPathManager {
         throw StateError('检测结果格式无效。');
       }
       final parsed = EnvPathConfigResult.fromJson(decoded);
-      _log('解析成功: ${parsed.items.length} 个变量, ${parsed.pathEntries.length} 个 PATH 条目');
+      _log(
+        '解析成功: ${parsed.items.length} 个变量, ${parsed.pathEntries.length} 个 PATH 条目',
+      );
       return parsed;
     } on FormatException catch (error) {
       _log('JSON 解析失败: $error');

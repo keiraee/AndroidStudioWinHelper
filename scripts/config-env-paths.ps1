@@ -8,7 +8,10 @@
     [string]$AppendPath,
     [string]$ResultFile,
     [string]$Scope = "Machine",
-    [switch]$Unset
+    [switch]$Unset,
+    [string]$BatchFile,
+    [switch]$PrepareRoot,
+    [string]$RootPath
 )
 
 $utf8 = [System.Text.UTF8Encoding]::new($false)
@@ -106,6 +109,126 @@ function Write-ResultJson {
 
 # ==================== Write 模式 ====================
 if ($Write) {
+    if ($PrepareRoot) {
+        $result = @{ success = $false; variable = "ROOT"; value = $RootPath; error = "" }
+        try {
+            if ([string]::IsNullOrWhiteSpace($RootPath)) { throw "未指定根目录" }
+
+            if (Test-Path -LiteralPath $RootPath) {
+                $existing = Get-Item -LiteralPath $RootPath -Force
+                if (-not $existing.PSIsContainer) {
+                    throw "目标路径已存在但不是文件夹: $RootPath"
+                }
+            } else {
+                if ($RootPath -match '^([A-Za-z]):\\') {
+                    $driveRoot = ($matches[1] + ':\')
+                    if (-not (Test-Path -LiteralPath $driveRoot)) {
+                        throw "盘符 $($matches[1]): 在管理员进程中不可用。网络映射盘请使用 UNC 路径，或改选本地磁盘。"
+                    }
+                }
+                $created = [System.IO.Directory]::CreateDirectory($RootPath)
+                if (-not $created.Exists) { throw "目录创建失败: $RootPath" }
+            }
+
+            if (-not [System.IO.Directory]::Exists($RootPath)) {
+                throw "目录不可用: $RootPath"
+            }
+
+            $probe = Join-Path $RootPath ".aswh_write_probe"
+            [System.IO.File]::WriteAllText($probe, "ok")
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+            $result.success = $true
+        } catch {
+            $result.error = $_.Exception.Message
+        }
+        Write-ResultJson (([PSCustomObject]$result) | ConvertTo-Json -Compress)
+        exit 0
+    }
+
+    if ($BatchFile) {
+        $result = @{ success = $false; variable = "BATCH"; value = ""; error = ""; items = @() }
+        try {
+            if (-not (Test-Path -LiteralPath $BatchFile)) { throw "批处理文件不存在: $BatchFile" }
+            $rawBatch = [System.IO.File]::ReadAllText($BatchFile, [System.Text.UTF8Encoding]::new($false))
+            $batch = $rawBatch | ConvertFrom-Json
+            $createDir = [bool]$batch.createDir
+            $allOk = $true
+            $items = @()
+
+            foreach ($v in @($batch.variables)) {
+                $name = [string]$v.name
+                $val = [string]$v.value
+                $item = @{ variable = $name; value = $val; success = $false; error = "" }
+                try {
+                    if ([string]::IsNullOrWhiteSpace($name)) { throw "变量名为空" }
+                    if ($createDir -and -not [string]::IsNullOrWhiteSpace($val) -and -not (Test-Path -LiteralPath $val)) {
+                        New-Item -ItemType Directory -Force -Path $val | Out-Null
+                    }
+                    [Environment]::SetEnvironmentVariable($name, $val, "Machine")
+                    $readBack = [Environment]::GetEnvironmentVariable($name, "Machine")
+                    if ($readBack -ne $val) { throw "回读不一致: 期望 $val , 实际 $readBack" }
+                    $item.success = $true
+                } catch {
+                    $allOk = $false
+                    $item.error = $_.Exception.Message
+                }
+                $items += $item
+            }
+
+            foreach ($p in @($batch.appendPath)) {
+                $pathVal = [string]$p
+                if ([string]::IsNullOrWhiteSpace($pathVal)) { continue }
+                $item = @{ variable = "PATH"; value = $pathVal; success = $false; error = "" }
+                try {
+                    if ($createDir -and -not (Test-Path -LiteralPath $pathVal)) {
+                        New-Item -ItemType Directory -Force -Path $pathVal | Out-Null
+                    }
+                    $systemPath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
+                    $currentParts = @()
+                    if ($systemPath) { $currentParts = $systemPath -split ";" | Where-Object { $_ -ne "" } }
+                    $normalizedParts = $currentParts | ForEach-Object { Normalize-Path $_ }
+                    $toAdd = Normalize-Path $pathVal
+                    if ($normalizedParts -notcontains $toAdd) {
+                        $newPath = ($currentParts + $pathVal) -join ";"
+                        [Environment]::SetEnvironmentVariable("PATH", $newPath, "Machine")
+                    }
+                    $readPath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
+                    $readParts = @()
+                    if ($readPath) { $readParts = $readPath -split ";" | ForEach-Object { Normalize-Path $_ } }
+                    if ($readParts -notcontains $toAdd) { throw "PATH 回读未包含 $pathVal" }
+                    $item.success = $true
+                } catch {
+                    $allOk = $false
+                    $item.error = $_.Exception.Message
+                }
+                $items += $item
+            }
+
+            Broadcast-SettingChange
+            $itemObjs = @($items | ForEach-Object {
+                [PSCustomObject]@{
+                    variable = $_.variable
+                    value    = $_.value
+                    success  = $_.success
+                    error    = $_.error
+                }
+            })
+            $resultObj = [PSCustomObject]@{
+                success  = $allOk
+                variable = "BATCH"
+                value    = ""
+                error    = $(if (-not $allOk) { "部分环境变量写入或校验失败" } else { "" })
+                items    = $itemObjs
+            }
+            Write-ResultJson ($resultObj | ConvertTo-Json -Depth 6 -Compress)
+            exit 0
+        } catch {
+            $result.error = $_.Exception.Message
+        }
+        Write-ResultJson (([PSCustomObject]$result) | ConvertTo-Json -Depth 6 -Compress)
+        exit 0
+    }
+
     $result = @{ success = $false; variable = ""; value = ""; error = "" }
 
     try {

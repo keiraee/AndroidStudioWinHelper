@@ -33,15 +33,15 @@ class EnvPathItem {
   }
 
   Map<String, dynamic> toJson() => {
-        'variable': variable,
-        'label': label,
-        'currentValue': currentValue,
-        'source': source,
-        'exists': exists,
-        'sizeBytes': sizeBytes,
-        'sizeHuman': sizeHuman,
-        'suggestedDefault': suggestedDefault,
-      };
+    'variable': variable,
+    'label': label,
+    'currentValue': currentValue,
+    'source': source,
+    'exists': exists,
+    'sizeBytes': sizeBytes,
+    'sizeHuman': sizeHuman,
+    'suggestedDefault': suggestedDefault,
+  };
 }
 
 class EnvPathEntry {
@@ -67,18 +67,15 @@ class EnvPathEntry {
   }
 
   Map<String, dynamic> toJson() => {
-        'subDir': subDir,
-        'fullPath': fullPath,
-        'inPath': inPath,
-        'exists': exists,
-      };
+    'subDir': subDir,
+    'fullPath': fullPath,
+    'inPath': inPath,
+    'exists': exists,
+  };
 }
 
 class EnvPathConfigResult {
-  const EnvPathConfigResult({
-    required this.items,
-    required this.pathEntries,
-  });
+  const EnvPathConfigResult({required this.items, required this.pathEntries});
 
   final List<EnvPathItem> items;
   final List<EnvPathEntry> pathEntries;
@@ -89,23 +86,23 @@ class EnvPathConfigResult {
     return EnvPathConfigResult(
       items: rawItems is List
           ? rawItems
-              .whereType<Map<String, dynamic>>()
-              .map(EnvPathItem.fromJson)
-              .toList()
+                .whereType<Map<String, dynamic>>()
+                .map(EnvPathItem.fromJson)
+                .toList()
           : const [],
       pathEntries: rawPathEntries is List
           ? rawPathEntries
-              .whereType<Map<String, dynamic>>()
-              .map(EnvPathEntry.fromJson)
-              .toList()
+                .whereType<Map<String, dynamic>>()
+                .map(EnvPathEntry.fromJson)
+                .toList()
           : const [],
     );
   }
 
   Map<String, dynamic> toJson() => {
-        'items': items.map((e) => e.toJson()).toList(),
-        'pathEntries': pathEntries.map((e) => e.toJson()).toList(),
-      };
+    'items': items.map((e) => e.toJson()).toList(),
+    'pathEntries': pathEntries.map((e) => e.toJson()).toList(),
+  };
 }
 
 class EnvPathWriteResult {
@@ -131,11 +128,44 @@ class EnvPathWriteResult {
   }
 
   Map<String, dynamic> toJson() => {
-        'success': success,
-        'variable': variable,
-        'value': value,
-        'error': error,
-      };
+    'success': success,
+    'variable': variable,
+    'value': value,
+    'error': error,
+  };
+}
+
+class EnvPathBatchWriteResult {
+  const EnvPathBatchWriteResult({
+    required this.success,
+    this.error = '',
+    this.items = const [],
+  });
+
+  final bool success;
+  final String error;
+  final List<EnvPathWriteResult> items;
+
+  factory EnvPathBatchWriteResult.fromJson(Map<String, dynamic> json) {
+    final rawItems = json['items'];
+    final parsed = <EnvPathWriteResult>[];
+    if (rawItems is List) {
+      for (final e in rawItems) {
+        if (e is Map) {
+          parsed.add(EnvPathWriteResult.fromJson(Map<String, dynamic>.from(e)));
+        }
+      }
+    } else if (rawItems is Map) {
+      parsed.add(
+        EnvPathWriteResult.fromJson(Map<String, dynamic>.from(rawItems)),
+      );
+    }
+    return EnvPathBatchWriteResult(
+      success: json['success'] as bool? ?? false,
+      error: json['error'] as String? ?? '',
+      items: parsed,
+    );
+  }
 }
 
 int _readInt(Object? value) {

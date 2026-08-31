@@ -2,19 +2,23 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:androidstudiowinhelper/core/android_studio_detector.dart';
 import 'package:androidstudiowinhelper/core/app_settings.dart';
 import 'package:androidstudiowinhelper/core/download/reachability.dart';
 import 'package:androidstudiowinhelper/core/download_license_consent.dart';
 import 'package:androidstudiowinhelper/core/download_manager.dart';
 import 'package:androidstudiowinhelper/core/format_utils.dart';
+import 'package:androidstudiowinhelper/core/models/android_studio_install.dart';
 import 'package:androidstudiowinhelper/core/models/download_task.dart';
 import 'package:androidstudiowinhelper/core/models/scan_progress.dart';
 import 'package:androidstudiowinhelper/core/models/studio_version.dart';
 import 'package:androidstudiowinhelper/core/platform_utils.dart';
 import 'package:androidstudiowinhelper/core/scan_cache.dart';
 import 'package:androidstudiowinhelper/core/studio_version_service.dart';
+import 'package:androidstudiowinhelper/core/version/install_upgrade.dart';
 import 'package:androidstudiowinhelper/core/version/version_catalog.dart';
 import 'package:androidstudiowinhelper/pages/download_progress_card.dart';
+import 'package:androidstudiowinhelper/pages/install_env_wizard.dart';
 import 'package:androidstudiowinhelper/pages/shared_widgets.dart';
 
 class DownloadTab extends StatefulWidget {
@@ -41,24 +45,28 @@ class _DownloadTabState extends State<DownloadTab> {
   String? _error;
   List<String>? _warnings;
   String? _selectedChannel = VersionCatalog.defaultChannel;
+  int? _selectedYear;
   bool _showHistory = false;
   _DownloadPane _pane = _DownloadPane.catalog;
   ProbeResult? _archiveProbe;
   ProbeResult? _downloadProbe;
   final Set<String> _copyLinkKeys = {};
   String? _checkingKey;
+  AndroidStudioDetectionResult? _detection;
 
   @override
   void initState() {
     super.initState();
     _settings = AppSettings.load();
+    _detection = ScanCache.loadInstall();
     if (_settings.hasDownloadDirectory) {
       _downloadManager.useDownloadsDir(_settings.downloadDirectory!);
       _downloadManager.recoverFromDisk();
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _loading) return;
+      if (!mounted) return;
       _loadPage();
+      _refreshInstalled();
     });
   }
 
@@ -67,6 +75,36 @@ class _DownloadTabState extends State<DownloadTab> {
     _versionService.dispose();
     _downloadManager.dispose();
     super.dispose();
+  }
+
+  void _syncInstalledCache() {
+    final cached = ScanCache.loadInstall();
+    if (cached == null || !mounted) return;
+    setState(() => _detection = cached);
+  }
+
+  Future<void> _refreshInstalled() async {
+    _syncInstalledCache();
+    if (_detection != null) return;
+    try {
+      final result = await AndroidStudioDetector().detectAll();
+      ScanCache.saveInstall(result);
+      if (!mounted) return;
+      setState(() => _detection = result);
+    } catch (_) {
+      // 本机检测失败不影响下载列表
+    }
+  }
+
+  void _showUpgradeTarget(InstallUpgradeReport report) {
+    final latest = report.latest;
+    if (latest == null) return;
+    setState(() {
+      _pane = _DownloadPane.catalog;
+      _selectedChannel = latest.channel;
+      _selectedYear = null;
+      _showHistory = false;
+    });
   }
 
   Future<void> _loadPage() async {
@@ -78,6 +116,7 @@ class _DownloadTabState extends State<DownloadTab> {
       _warnings = null;
       _progress = const ScanProgress(percent: 10, message: '正在检测归档页…');
     });
+    await Future<void>.delayed(Duration.zero);
 
     final archive = await _reachability.probeArchive();
     if (!mounted) return;
@@ -114,6 +153,7 @@ class _DownloadTabState extends State<DownloadTab> {
       });
       ScanCache.saveVersions(result.versions);
       await _downloadManager.recoverFromDisk(result.versions);
+      _syncInstalledCache();
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = error.toString());
@@ -131,7 +171,8 @@ class _DownloadTabState extends State<DownloadTab> {
     final versions = _versions;
     if (versions == null || versions.isEmpty) return;
     final featured = VersionCatalog.featured(versions);
-    final url = featured?.downloadUrl ??
+    final url =
+        featured?.downloadUrl ??
         versions
             .where((v) => v.downloadUrl.isNotEmpty)
             .map((v) => v.downloadUrl)
@@ -167,13 +208,15 @@ class _DownloadTabState extends State<DownloadTab> {
   }
 
   Future<void> _runInstallerKey(String versionKey) async {
+    final prepared = await showInstallEnvWizard(context);
+    if (!mounted || !prepared) return;
     try {
       await _downloadManager.runInstaller(versionKey);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('无法启动安装程序: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('无法启动安装程序: $e')));
     }
   }
 
@@ -181,9 +224,9 @@ class _DownloadTabState extends State<DownloadTab> {
     if (url.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: url));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('下载链接已复制')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('下载链接已复制')));
   }
 
   Future<String?> _pickFolder() {
@@ -215,9 +258,9 @@ class _DownloadTabState extends State<DownloadTab> {
                   const SizedBox(height: 12),
                   Text(
                     path ?? '尚未配置',
-                    style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
-                          fontFamily: 'Consolas',
-                        ),
+                    style: Theme.of(
+                      ctx,
+                    ).textTheme.bodySmall?.copyWith(fontFamily: 'Consolas'),
                   ),
                 ],
               ),
@@ -284,9 +327,9 @@ class _DownloadTabState extends State<DownloadTab> {
   Future<void> _startDownload(StudioVersion v) async {
     if (v.downloadUrl.isEmpty) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('该版本没有可用的 Windows 下载链接')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('该版本没有可用的 Windows 下载链接')));
       return;
     }
 
@@ -303,9 +346,7 @@ class _DownloadTabState extends State<DownloadTab> {
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('当前无法下载'),
-          content: const Text(
-            '安装包直链连续 3 次无法访问。可复制链接后用浏览器自行下载。',
-          ),
+          content: const Text('安装包直链连续 3 次无法访问。可复制链接后用浏览器自行下载。'),
           actions: [
             TextButton(
               onPressed: () {
@@ -370,9 +411,9 @@ class _DownloadTabState extends State<DownloadTab> {
     }
     if (task.url.isEmpty) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('找不到该任务的下载链接，无法续传')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('找不到该任务的下载链接，无法续传')));
       return;
     }
     _downloadManager.start(task.versionKey, task.url);
@@ -389,35 +430,42 @@ class _DownloadTabState extends State<DownloadTab> {
 
   @override
   Widget build(BuildContext context) {
-    final channels = <String>[];
-    final seen = <String>{};
-    if (_versions != null) {
-      for (final v in _versions!) {
-        if (seen.add(v.channel)) {
-          channels.add(v.channel);
-        }
-      }
-    }
+    final channels = _versions == null
+        ? const <String>[]
+        : VersionCatalog.orderedChannels(_versions!.map((v) => v.channel));
+    final years = _versions == null
+        ? const <int>[]
+        : VersionCatalog.years(_versions!);
 
-    final filtered = _versions
-        ?.where((v) =>
-            _selectedChannel == null || v.channel == _selectedChannel)
-        .toList();
     final featured = _versions == null
         ? null
-        : VersionCatalog.featured(_versions!, channel: _selectedChannel);
+        : VersionCatalog.featured(
+            _versions!,
+            channel: _selectedChannel,
+            year: _selectedYear,
+          );
     final listed = _versions == null
         ? const <StudioVersion>[]
         : VersionCatalog.listForDisplay(
             versions: _versions!,
             channel: _selectedChannel,
+            year: _selectedYear,
             showHistory: _showHistory,
           );
-    final hasMoreHistory = _versions != null &&
+    final hasMoreHistory =
+        _versions != null &&
         VersionCatalog.hasMoreHistory(
           versions: _versions!,
           channel: _selectedChannel,
+          year: _selectedYear,
         );
+    final channelEmpty =
+        _versions != null &&
+        VersionCatalog.filtered(
+          _versions!,
+          channel: _selectedChannel,
+          year: _selectedYear,
+        ).isEmpty;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
@@ -452,84 +500,17 @@ class _DownloadTabState extends State<DownloadTab> {
               child: Text(
                 '保存到 ${_settings.downloadDirectory}',
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withValues(alpha: 0.55),
-                    ),
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.onSurface.withValues(alpha: 0.55),
+                ),
               ),
             ),
           const SizedBox(height: 12),
           _buildLatencyRow(),
-          _buildPaneChips(channels),
-          if (_pane == _DownloadPane.catalog &&
-              channels.length > 1 &&
-              !_archiveFailed)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      InkWell(
-                        borderRadius: BorderRadius.circular(6),
-                        onTap: () => openUrl(Reachability.archiveFallbackUrl),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 4),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.history,
-                                  size: 16,
-                                  color: Theme.of(context).colorScheme.primary),
-                              const SizedBox(width: 6),
-                              Text(
-                                '历史版本归档',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .labelMedium
-                                    ?.copyWith(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .primary,
-                                    ),
-                              ),
-                              const SizedBox(width: 4),
-                              Icon(
-                                Icons.open_in_new,
-                                size: 14,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .primary
-                                    .withValues(alpha: 0.6),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.only(left: 10, top: 2),
-                        child: Text(
-                          '默认显示近期版本，完整历史可展开或打开归档',
-                          style:
-                              Theme.of(context).textTheme.labelSmall?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurface
-                                        .withValues(alpha: 0.4),
-                                  ),
-                        ),
-                      ),
-                    ],
-                  ),
-              ),
-            ),
-          if (_pane == _DownloadPane.catalog &&
-              _loading &&
-              _progress != null)
+          _buildInstallUpgradeBanner(),
+          _buildFilterBar(channels, years),
+          if (_pane == _DownloadPane.catalog && _loading && _progress != null)
             ProgressPanel(progress: _progress!),
           if (_pane == _DownloadPane.catalog && _error != null)
             ErrorPanel(message: _error!),
@@ -541,7 +522,7 @@ class _DownloadTabState extends State<DownloadTab> {
               featured: featured,
               listed: listed,
               hasMoreHistory: hasMoreHistory,
-              channelEmpty: filtered != null && filtered.isEmpty,
+              channelEmpty: channelEmpty,
             ),
           ),
         ],
@@ -549,46 +530,125 @@ class _DownloadTabState extends State<DownloadTab> {
     );
   }
 
-  Widget _buildPaneChips(List<String> channels) {
+  Widget _buildFilterBar(List<String> channels, List<int> years) {
+    final channelItems = <String>['', ...channels];
+    final channelValue = channelItems.contains(_selectedChannel ?? '')
+        ? (_selectedChannel ?? '')
+        : '';
+    final yearItems = <int?>[null, ...years];
+    final yearValue = yearItems.contains(_selectedYear) ? _selectedYear : null;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
+      child: Row(
         children: [
-          FilterChip(
-            label: const Text('全部'),
-            selected:
-                _pane == _DownloadPane.catalog && _selectedChannel == null,
-            onSelected: (_) => setState(() {
-              _pane = _DownloadPane.catalog;
-              _selectedChannel = null;
-              _showHistory = false;
-            }),
-          ),
-          for (final ch in channels)
-            FilterChip(
-              label: Text(channelDisplayName(ch)),
-              selected:
-                  _pane == _DownloadPane.catalog && _selectedChannel == ch,
-              onSelected: (sel) => setState(() {
+          Expanded(
+            child: _filterDropdown<String>(
+              label: '渠道',
+              value: channelValue,
+              items: [
+                const DropdownMenuItem(value: '', child: Text('全部')),
+                for (final ch in channels)
+                  DropdownMenuItem(
+                    value: ch,
+                    child: Text(channelDisplayName(ch)),
+                  ),
+              ],
+              onChanged: (value) => setState(() {
                 _pane = _DownloadPane.catalog;
-                _selectedChannel = sel ? ch : null;
+                _selectedChannel = (value == null || value.isEmpty)
+                    ? null
+                    : value;
                 _showHistory = false;
               }),
             ),
-          FilterChip(
-            label: const Text('下载中'),
-            selected: _pane == _DownloadPane.downloading,
-            onSelected: (_) =>
-                setState(() => _pane = _DownloadPane.downloading),
           ),
-          FilterChip(
-            label: const Text('已完成'),
-            selected: _pane == _DownloadPane.completed,
-            onSelected: (_) => setState(() => _pane = _DownloadPane.completed),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _filterDropdown<int>(
+              label: '年份',
+              value: yearValue ?? -1,
+              items: [
+                const DropdownMenuItem(value: -1, child: Text('全部年份')),
+                for (final year in years)
+                  DropdownMenuItem(value: year, child: Text('$year')),
+              ],
+              onChanged: (value) => setState(() {
+                _pane = _DownloadPane.catalog;
+                _selectedYear = (value == null || value < 0) ? null : value;
+                _showHistory = false;
+              }),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _filterDropdown<_DownloadPane>(
+              label: '页面',
+              value: _pane,
+              items: const [
+                DropdownMenuItem(
+                  value: _DownloadPane.catalog,
+                  child: Text('版本列表'),
+                ),
+                DropdownMenuItem(
+                  value: _DownloadPane.downloading,
+                  child: Text('下载中'),
+                ),
+                DropdownMenuItem(
+                  value: _DownloadPane.completed,
+                  child: Text('已完成'),
+                ),
+              ],
+              onChanged: (value) {
+                if (value == null) return;
+                setState(() => _pane = value);
+              },
+            ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _filterDropdown<T>({
+    required String label,
+    required T value,
+    required List<DropdownMenuItem<T>> items,
+    required ValueChanged<T?> onChanged,
+  }) {
+    final selected = items.where((item) => item.value == value).firstOrNull;
+    return InputDecorator(
+      decoration: InputDecoration(
+        labelText: label,
+        isDense: true,
+        border: const OutlineInputBorder(),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      ),
+      child: PopupMenuButton<T>(
+        tooltip: '',
+        initialValue: value,
+        padding: EdgeInsets.zero,
+        onSelected: onChanged,
+        itemBuilder: (context) => [
+          for (final item in items)
+            PopupMenuItem<T>(value: item.value, child: item.child),
+        ],
+        child: Row(
+          children: [
+            Expanded(
+              child: DefaultTextStyle.merge(
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                child: selected?.child ?? const SizedBox.shrink(),
+              ),
+            ),
+            Icon(
+              Icons.arrow_drop_down,
+              size: 20,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -623,6 +683,127 @@ class _DownloadTabState extends State<DownloadTab> {
     );
   }
 
+  Widget _buildInstallUpgradeBanner() {
+    final detection = _detection;
+    final installs = detection?.installs ?? const <AndroidStudioInstall>[];
+    final install =
+        detection?.selected ?? (installs.isEmpty ? null : installs.first);
+    final report = InstallUpgrade.evaluate(
+      install: install,
+      catalog: _versions ?? const [],
+    );
+
+    final colorScheme = Theme.of(context).colorScheme;
+    final Color color;
+    final IconData icon;
+    final String title;
+    final String subtitle;
+    final bool tappable;
+
+    final installTag = install == null
+        ? ''
+        : '本机 · ${install.channel.isEmpty ? '安装' : install.channel} · ${report.installedLabel}';
+    final waiting = report.verdict == UpgradeVerdict.waitingCatalog;
+
+    switch (report.verdict) {
+      case UpgradeVerdict.notInstalled:
+        color = colorScheme.outline;
+        icon = Icons.desktop_access_disabled_outlined;
+        title = '本机未安装 Android Studio';
+        subtitle = '下面列表可直接下载安装包';
+        tappable = false;
+      case UpgradeVerdict.waitingCatalog:
+        color = colorScheme.outline;
+        icon = Icons.desktop_windows_outlined;
+        title = installTag;
+        subtitle = '正在获取官方归档，稍后自动对比是否需要升级';
+        tappable = false;
+      case UpgradeVerdict.unknown:
+        color = colorScheme.outline;
+        icon = Icons.help_outline;
+        title = installTag;
+        subtitle = '已检测到安装，但版本号无法和归档对比';
+        tappable = false;
+      case UpgradeVerdict.updateAvailable:
+        color = Colors.orange.shade800;
+        icon = Icons.system_update_alt;
+        title = installTag;
+        subtitle = '可升级到 ${report.latest?.version ?? ''}';
+        tappable = report.latest != null;
+      case UpgradeVerdict.upToDate:
+        color = Colors.green.shade700;
+        icon = Icons.check_circle_outline;
+        title = installTag;
+        subtitle = '已是当前渠道最新，无需升级';
+        tappable = false;
+      case UpgradeVerdict.newerThanCatalog:
+        color = colorScheme.primary;
+        icon = Icons.info_outline;
+        title = installTag;
+        subtitle = '比归档当前最新包还新';
+        tappable = false;
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Material(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: tappable ? () => _showUpgradeTarget(report) : null,
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: color.withValues(alpha: 0.35)),
+            ),
+            child: Row(
+              children: [
+                if (waiting)
+                  SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: color,
+                    ),
+                  )
+                else
+                  Icon(icon, size: 18, color: color),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          color: color,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: color.withValues(alpha: 0.85),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (tappable)
+                  Icon(Icons.arrow_forward_ios, size: 12, color: color),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildBody({
     required StudioVersion? featured,
     required List<StudioVersion> listed,
@@ -637,9 +818,9 @@ class _DownloadTabState extends State<DownloadTab> {
           return _buildLocalPane();
         }
 
-        return ListView(
-          children: [
-            if (_archiveFailed)
+        if (_archiveFailed) {
+          return ListView(
+            children: [
               Padding(
                 padding: const EdgeInsets.only(bottom: 16),
                 child: EmptyPanel(
@@ -651,14 +832,53 @@ class _DownloadTabState extends State<DownloadTab> {
                   onAction: () => openUrl(Reachability.archiveFallbackUrl),
                 ),
               ),
-            if (!_archiveFailed)
-              ..._versionListChildren(
-                featured: featured,
-                listed: listed,
-                hasMoreHistory: hasMoreHistory,
-                channelEmpty: channelEmpty,
+            ],
+          );
+        }
+
+        if (_loading && _versions == null) return const SizedBox.shrink();
+        if (_versions == null) {
+          return const EmptyPanel(hint: '正在获取官方版本列表。也可点击右上角「获取版本」手动重试。');
+        }
+        if (channelEmpty && featured == null) {
+          return const EmptyPanel(hint: '当前渠道或年份下暂无版本。');
+        }
+
+        final featuredCount = featured == null ? 0 : 1;
+        final extra = hasMoreHistory ? 1 : 0;
+        return ListView.builder(
+          itemCount: featuredCount + listed.length + extra,
+          itemBuilder: (context, index) {
+            if (featured != null && index == 0) {
+              return _FeaturedVersionCard(
+                version: featured,
+                downloadTask: _downloadManager.taskFor(featured.version),
+                checking: _checkingKey == featured.version,
+                showCopyLink: _copyLinkKeys.contains(featured.version),
+                onDownloadAction: (action) =>
+                    _handleDownloadAction(featured, action),
+              );
+            }
+            final listIndex = index - featuredCount;
+            if (listIndex < listed.length) {
+              final v = listed[listIndex];
+              return _VersionCard(
+                version: v,
+                downloadTask: _downloadManager.taskFor(v.version),
+                showCopyLink: _copyLinkKeys.contains(v.version),
+                onDownloadAction: (action) => _handleDownloadAction(v, action),
+              );
+            }
+            return Padding(
+              padding: const EdgeInsets.only(top: 8, bottom: 16),
+              child: Center(
+                child: TextButton(
+                  onPressed: () => setState(() => _showHistory = !_showHistory),
+                  child: Text(_showHistory ? '收起历史版本' : '显示更多历史版本'),
+                ),
               ),
-          ],
+            );
+          },
         );
       },
     );
@@ -694,9 +914,7 @@ class _DownloadTabState extends State<DownloadTab> {
       children: [
         _ShelfHeader(
           title: downloading ? '下载中' : '已完成',
-          subtitle: downloading
-              ? '包含暂停或关闭软件后未完成的任务'
-              : '来自本地下载文件夹中的安装包',
+          subtitle: downloading ? '包含暂停或关闭软件后未完成的任务' : '来自本地下载文件夹中的安装包',
           count: items.length,
         ),
         for (final task in items)
@@ -714,51 +932,6 @@ class _DownloadTabState extends State<DownloadTab> {
                 ),
       ],
     );
-  }
-
-  List<Widget> _versionListChildren({
-    required StudioVersion? featured,
-    required List<StudioVersion> listed,
-    required bool hasMoreHistory,
-    required bool channelEmpty,
-  }) {
-    if (_loading && _versions == null) return const [];
-    if (_versions == null) {
-      return const [
-        EmptyPanel(hint: '正在获取官方版本列表。也可点击右上角「获取版本」手动重试。'),
-      ];
-    }
-    if (channelEmpty && featured == null) {
-      return const [EmptyPanel(hint: '该渠道暂无版本。')];
-    }
-
-    return [
-      if (featured != null)
-        _FeaturedVersionCard(
-          version: featured,
-          downloadTask: _downloadManager.taskFor(featured.version),
-          checking: _checkingKey == featured.version,
-          showCopyLink: _copyLinkKeys.contains(featured.version),
-          onDownloadAction: (action) => _handleDownloadAction(featured, action),
-        ),
-      for (final v in listed)
-        _VersionCard(
-          version: v,
-          downloadTask: _downloadManager.taskFor(v.version),
-          showCopyLink: _copyLinkKeys.contains(v.version),
-          onDownloadAction: (action) => _handleDownloadAction(v, action),
-        ),
-      if (hasMoreHistory)
-        Padding(
-          padding: const EdgeInsets.only(top: 8, bottom: 16),
-          child: Center(
-            child: TextButton(
-              onPressed: () => setState(() => _showHistory = !_showHistory),
-              child: Text(_showHistory ? '收起历史版本' : '显示更多历史版本'),
-            ),
-          ),
-        ),
-    ];
   }
 
   Widget _buildSystemVersionBanner() {
@@ -795,10 +968,8 @@ class _DownloadTabState extends State<DownloadTab> {
                     ? '$sysLabel Build $buildStr — 版本过低，新版 Android Studio (2024.3+) 需要 Win10 2004 (Build 19041) 及以上'
                     : '$sysLabel Build $buildStr — 兼容所有版本',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: isOld
-                          ? Theme.of(context).colorScheme.error
-                          : null,
-                    ),
+                  color: isOld ? Theme.of(context).colorScheme.error : null,
+                ),
               ),
             ),
           ],
@@ -838,8 +1009,8 @@ class _LatencyBadge extends StatelessWidget {
       color = bars >= 3
           ? Colors.green
           : bars == 2
-              ? Colors.orange
-              : colorScheme.error;
+          ? Colors.orange
+          : colorScheme.error;
       text = '${result!.latencyMs} ms';
     }
 
@@ -857,34 +1028,68 @@ class _LatencyBadge extends StatelessWidget {
             SizedBox(
               width: 12,
               height: 12,
-              child: CircularProgressIndicator(
-                strokeWidth: 1.6,
-                color: color,
-              ),
+              child: CircularProgressIndicator(strokeWidth: 1.6, color: color),
             )
           else
-            Icon(_signalIcon(bars, result?.ok ?? false), size: 16, color: color),
+            ExcludeSemantics(
+              child: _SignalBars(bars: bars, color: color),
+            ),
           const SizedBox(width: 6),
           Text(
             '$label $text',
             style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: color,
-                  fontWeight: FontWeight.w600,
-                ),
+              color: color,
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ],
       ),
     );
   }
+}
 
-  IconData _signalIcon(int bars, bool ok) {
-    if (!ok) return Icons.signal_cellular_off;
-    return switch (bars) {
-      4 => Icons.signal_cellular_alt,
-      3 => Icons.signal_cellular_alt_2_bar,
-      2 => Icons.signal_cellular_alt_1_bar,
-      _ => Icons.signal_cellular_0_bar,
-    };
+/// 始终画出 4 格：点亮实心、未点亮空心，对照满格才能看出好坏。
+class _SignalBars extends StatelessWidget {
+  const _SignalBars({required this.bars, required this.color});
+
+  final int bars;
+  final Color color;
+
+  static const _total = 4;
+
+  @override
+  Widget build(BuildContext context) {
+    final lit = bars.clamp(0, _total);
+    return SizedBox(
+      width: 18,
+      height: 14,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          for (var i = 0; i < _total; i++)
+            Expanded(
+              child: Padding(
+                padding: EdgeInsets.only(right: i == _total - 1 ? 0 : 1.5),
+                child: Align(
+                  alignment: Alignment.bottomCenter,
+                  child: Container(
+                    width: double.infinity,
+                    height: 5.0 + i * 3.0,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(1),
+                      color: i < lit ? color : Colors.transparent,
+                      border: Border.all(
+                        color: i < lit ? color : color.withValues(alpha: 0.38),
+                        width: 1,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 }
 
@@ -910,17 +1115,17 @@ class _ShelfHeader extends StatelessWidget {
           const SizedBox(width: 8),
           Text(
             '$count',
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  color: colorScheme.primary,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(color: colorScheme.primary),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
               subtitle,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
+                color: colorScheme.onSurfaceVariant,
+              ),
             ),
           ),
         ],
@@ -967,9 +1172,9 @@ class _ShelfTaskCard extends StatelessWidget {
             Text(
               sizeText,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    fontFamily: 'Consolas',
-                    color: colorScheme.onSurfaceVariant,
-                  ),
+                fontFamily: 'Consolas',
+                color: colorScheme.onSurfaceVariant,
+              ),
             ),
             if (!isDone) ...[
               const SizedBox(height: 8),
@@ -1017,10 +1222,7 @@ class _ShelfTaskCard extends StatelessWidget {
                         visualDensity: VisualDensity.compact,
                       ),
                     ),
-                  TextButton(
-                    onPressed: onCancel,
-                    child: const Text('取消'),
-                  ),
+                  TextButton(onPressed: onCancel, child: const Text('取消')),
                 ],
               ],
             ),
@@ -1050,8 +1252,7 @@ class _FeaturedVersionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    final title =
-        version.codename.isEmpty ? version.version : version.codename;
+    final title = version.codename.isEmpty ? version.version : version.codename;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -1071,13 +1272,13 @@ class _FeaturedVersionCard extends StatelessWidget {
             const SizedBox(height: 8),
             Row(
               children: [
-                Flexible(
-                  child: Text(title, style: textTheme.titleMedium),
-                ),
+                Flexible(child: Text(title, style: textTheme.titleMedium)),
                 const SizedBox(width: 8),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: colorScheme.surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(4),
@@ -1122,11 +1323,14 @@ class _FeaturedVersionCard extends StatelessWidget {
             ],
             const SizedBox(height: 12),
             if (version.downloadUrl.isNotEmpty)
-              DownloadProgressCard(
-                task: downloadTask,
-                onAction: onDownloadAction,
-                hasUrl: version.downloadUrl.isNotEmpty,
-                showCopyLink: showCopyLink,
+              Align(
+                alignment: Alignment.centerLeft,
+                child: DownloadProgressCard(
+                  task: downloadTask,
+                  onAction: onDownloadAction,
+                  hasUrl: version.downloadUrl.isNotEmpty,
+                  showCopyLink: showCopyLink,
+                ),
               ),
           ],
         ),
@@ -1157,6 +1361,8 @@ class _VersionCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 10),
       child: ExpansionTile(
         tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        expandedAlignment: Alignment.centerLeft,
+        expandedCrossAxisAlignment: CrossAxisAlignment.start,
         leading: Icon(
           switch (version.channel) {
             'release' => Icons.check_circle_outline,
@@ -1221,36 +1427,43 @@ class _VersionCard extends StatelessWidget {
           ],
         ),
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (version.releaseNotes.isNotEmpty) ...[
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      color: colorScheme.surfaceContainerLow,
-                      child: Text(
-                        version.releaseNotes,
-                        maxLines: 8,
-                        overflow: TextOverflow.fade,
-                        style: textTheme.bodySmall?.copyWith(height: 1.5),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (version.releaseNotes.isNotEmpty) ...[
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        color: colorScheme.surfaceContainerLow,
+                        child: Text(
+                          version.releaseNotes,
+                          maxLines: 8,
+                          overflow: TextOverflow.fade,
+                          style: textTheme.bodySmall?.copyWith(height: 1.5),
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
+                    const SizedBox(height: 12),
+                  ],
+                  if (version.downloadUrl.isNotEmpty)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: DownloadProgressCard(
+                        task: downloadTask,
+                        onAction: onDownloadAction,
+                        hasUrl: version.downloadUrl.isNotEmpty,
+                        showCopyLink: showCopyLink,
+                      ),
+                    ),
                 ],
-                if (version.downloadUrl.isNotEmpty)
-                  DownloadProgressCard(
-                    task: downloadTask,
-                    onAction: onDownloadAction,
-                    hasUrl: version.downloadUrl.isNotEmpty,
-                    showCopyLink: showCopyLink,
-                  ),
-              ],
+              ),
             ),
           ),
         ],

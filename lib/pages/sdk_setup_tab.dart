@@ -86,7 +86,10 @@ class _SdkSetupTabState extends State<SdkSetupTab> {
                   : _sdkProxyController.text.trim(),
               onProgress: (pct, msg) {
                 if (!mounted) return;
-                setState(() { _percent = pct; _message = msg; });
+                setState(() {
+                  _percent = pct;
+                  _message = msg;
+                });
               },
             )
           : await _sdkSetupManager.uninstall(
@@ -94,7 +97,10 @@ class _SdkSetupTabState extends State<SdkSetupTab> {
               sdkDir: _sdkStatus?.sdkDir,
               onProgress: (pct, msg) {
                 if (!mounted) return;
-                setState(() { _percent = pct; _message = msg; });
+                setState(() {
+                  _percent = pct;
+                  _message = msg;
+                });
               },
             );
       if (!mounted) return;
@@ -140,9 +146,14 @@ class _SdkSetupTabState extends State<SdkSetupTab> {
                 padding: const EdgeInsets.all(20),
                 child: Column(
                   children: [
-                    LinearProgressIndicator(value: _percent > 0 ? _percent / 100 : null),
+                    LinearProgressIndicator(
+                      value: _percent > 0 ? _percent / 100 : null,
+                    ),
                     const SizedBox(height: 12),
-                    Text('$_percent% — $_message', style: Theme.of(context).textTheme.bodyMedium),
+                    Text(
+                      '$_percent% — $_message',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
                   ],
                 ),
               ),
@@ -155,8 +166,14 @@ class _SdkSetupTabState extends State<SdkSetupTab> {
                   : Colors.red.withValues(alpha: 0.1),
               child: Padding(
                 padding: const EdgeInsets.all(12),
-                child: Text(_actionResult!.message,
-                    style: TextStyle(color: _actionResult!.success ? Colors.green.shade800 : Colors.red.shade800)),
+                child: Text(
+                  _actionResult!.message,
+                  style: TextStyle(
+                    color: _actionResult!.success
+                        ? Colors.green.shade800
+                        : Colors.red.shade800,
+                  ),
+                ),
               ),
             ),
           if (info != null) _buildPackageManager(info, status),
@@ -202,7 +219,11 @@ class _SdkSetupTabState extends State<SdkSetupTab> {
               selected: _selectedPackages,
               onToggle: (pkg, sel) {
                 setState(() {
-                  if (sel) { _selectedPackages.add(pkg); } else { _selectedPackages.remove(pkg); }
+                  if (sel) {
+                    _selectedPackages.add(pkg);
+                  } else {
+                    _selectedPackages.remove(pkg);
+                  }
                 });
               },
             ),
@@ -210,11 +231,15 @@ class _SdkSetupTabState extends State<SdkSetupTab> {
             Padding(
               padding: const EdgeInsets.only(top: 16),
               child: ElevatedButton.icon(
-                onPressed: () => _runAction('install', _selectedPackages.toList()),
+                onPressed: () =>
+                    _runAction('install', _selectedPackages.toList()),
                 icon: const Icon(Icons.download),
                 label: Text('安装选中 (${_selectedPackages.length})'),
                 style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 14,
+                  ),
                 ),
               ),
             ),
@@ -234,22 +259,35 @@ class _SdkSetupTabState extends State<SdkSetupTab> {
           children: [
             Row(
               children: [
-                Icon(Icons.folder_outlined, size: 20, color: Theme.of(context).colorScheme.primary),
+                Icon(
+                  Icons.folder_outlined,
+                  size: 20,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: SelectableText(status.sdkDir,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(fontFamily: 'Consolas')),
+                  child: SelectableText(
+                    status.sdkDir,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(fontFamily: 'Consolas'),
+                  ),
                 ),
               ],
             ),
             const SizedBox(height: 8),
             Row(
               children: [
-                Icon(status.hasJava ? Icons.check_circle : Icons.error_outline,
-                    size: 18, color: status.hasJava ? Colors.green : Colors.red),
+                Icon(
+                  status.hasJava ? Icons.check_circle : Icons.error_outline,
+                  size: 18,
+                  color: status.hasJava ? Colors.green : Colors.red,
+                ),
                 const SizedBox(width: 8),
-                Text(status.hasJava ? 'Java: 已安装' : 'Java: 未检测到',
-                    style: Theme.of(context).textTheme.bodySmall),
+                Text(
+                  status.hasJava ? 'Java: 已安装' : 'Java: 未检测到',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
               ],
             ),
           ],
@@ -280,10 +318,16 @@ class _SdkSetupTabState extends State<SdkSetupTab> {
               isDense: true,
               decoration: const InputDecoration(
                 border: OutlineInputBorder(),
-                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
               ),
               items: const [
-                DropdownMenuItem(value: 'flutter', child: Text('Flutter CDN (推荐)')),
+                DropdownMenuItem(
+                  value: 'flutter',
+                  child: Text('Flutter CDN (推荐)'),
+                ),
                 DropdownMenuItem(value: 'tencent', child: Text('腾讯云')),
                 DropdownMenuItem(value: 'bfsu', child: Text('北外镜像')),
                 DropdownMenuItem(value: 'official', child: Text('Google 官方')),
@@ -293,10 +337,15 @@ class _SdkSetupTabState extends State<SdkSetupTab> {
             const SizedBox(height: 12),
             TextField(
               controller: _sdkProxyController,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(fontFamily: 'Consolas'),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(fontFamily: 'Consolas'),
               decoration: const InputDecoration(
                 isDense: true,
-                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
                 border: OutlineInputBorder(),
                 hintText: '留空不使用代理',
                 labelText: '代理地址（可选）',
@@ -337,7 +386,11 @@ class _SdkSetupTabState extends State<SdkSetupTab> {
                     selected: _selectedPackages.contains(key),
                     onSelected: (sel) {
                       setState(() {
-                        if (sel) { _selectedPackages.add(key); } else { _selectedPackages.remove(key); }
+                        if (sel) {
+                          _selectedPackages.add(key);
+                        } else {
+                          _selectedPackages.remove(key);
+                        }
                       });
                     },
                   ),
@@ -354,7 +407,10 @@ class _InstalledPackageTile extends StatelessWidget {
   final InstalledPackage package;
   final VoidCallback onUninstall;
 
-  const _InstalledPackageTile({required this.package, required this.onUninstall});
+  const _InstalledPackageTile({
+    required this.package,
+    required this.onUninstall,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -368,7 +424,10 @@ class _InstalledPackageTile extends StatelessWidget {
             const SizedBox(width: 10),
             Expanded(
               child: Tooltip(
-                message: package.path.isNotEmpty ? '${package.path}  ${package.version}' : package.displayTitle,
+                message: package.path.isNotEmpty
+                    ? '${package.path}  ${package.version}'
+                    : package.displayTitle,
+                excludeFromSemantics: true,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -394,7 +453,11 @@ class _InstalledPackageTile extends StatelessWidget {
               ),
             ),
             IconButton(
-              icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+              icon: const Icon(
+                Icons.delete_outline,
+                size: 18,
+                color: Colors.red,
+              ),
               tooltip: '卸载',
               onPressed: onUninstall,
               padding: EdgeInsets.zero,
@@ -430,9 +493,21 @@ class _PackageCategoryCard extends StatelessWidget {
         title: Row(
           children: [
             Expanded(
-              child: Text(category, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+              child: Text(
+                category,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
             ),
-            Text('${packages.length} 项', style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+            Text(
+              '${packages.length} 项',
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
           ],
         ),
         childrenPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -449,11 +524,16 @@ class _PackageCategoryCard extends StatelessWidget {
                     width: 24,
                     height: 24,
                     child: isInstalled
-                        ? const Icon(Icons.check_circle, color: Colors.green, size: 18)
+                        ? const Icon(
+                            Icons.check_circle,
+                            color: Colors.green,
+                            size: 18,
+                          )
                         : Checkbox(
                             value: isSelected,
                             onChanged: (v) => onToggle(pkg, v ?? false),
-                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
                           ),
                   ),
                   const SizedBox(width: 10),

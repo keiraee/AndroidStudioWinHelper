@@ -15,6 +15,7 @@ class AndroidStudioInstall {
     this.installSdk = '',
     this.installHaxm = '',
     this.userSettingsPath = '',
+    this.versionSuffix = '',
   });
 
   final String path;
@@ -49,6 +50,9 @@ class AndroidStudioInstall {
   /// HKLM\SOFTWARE\Android Studio → UserSettingsPath (如 %USERPROFILE%\.android)
   final String userSettingsPath;
 
+  /// product-info.json → versionSuffix（Patch 1 / Canary 4 等）
+  final String versionSuffix;
+
   factory AndroidStudioInstall.fromJson(Map<String, dynamic> json) {
     return AndroidStudioInstall(
       path: json['path'] as String? ?? '',
@@ -66,6 +70,7 @@ class AndroidStudioInstall {
       installSdk: json['installSdk'] as String? ?? '',
       installHaxm: json['installHaxm'] as String? ?? '',
       userSettingsPath: json['userSettingsPath'] as String? ?? '',
+      versionSuffix: json['versionSuffix'] as String? ?? '',
     );
   }
 
@@ -86,6 +91,7 @@ class AndroidStudioInstall {
       'installSdk': installSdk,
       'installHaxm': installHaxm,
       'userSettingsPath': userSettingsPath,
+      'versionSuffix': versionSuffix,
     };
   }
 
@@ -115,10 +121,10 @@ class AndroidStudioResidue {
   final String source;
 
   String get kindLabel => switch (kind) {
-        'orphanConfig' => '配置残留',
-        'registry' => '注册表残留',
-        _ => '卸载残留',
-      };
+    'orphanConfig' => '配置残留',
+    'registry' => '注册表残留',
+    _ => '卸载残留',
+  };
 
   factory AndroidStudioResidue.fromJson(Map<String, dynamic> json) {
     return AndroidStudioResidue(
@@ -133,14 +139,14 @@ class AndroidStudioResidue {
   }
 
   Map<String, dynamic> toJson() => {
-        'kind': kind,
-        'name': name,
-        'path': path,
-        'registryKey': registryKey,
-        'version': version,
-        'reason': reason,
-        'source': source,
-      };
+    'kind': kind,
+    'name': name,
+    'path': path,
+    'registryKey': registryKey,
+    'version': version,
+    'reason': reason,
+    'source': source,
+  };
 }
 
 enum AndroidStudioSelectionReason {
@@ -149,10 +155,10 @@ enum AndroidStudioSelectionReason {
   onlyCandidate;
 
   String get label => switch (this) {
-        runningProcess => '当前正在运行',
-        highestVersion => '版本最高',
-        onlyCandidate => '唯一候选',
-      };
+    runningProcess => '当前正在运行',
+    highestVersion => '版本最高',
+    onlyCandidate => '唯一候选',
+  };
 }
 
 class AndroidStudioDetectionResult {
@@ -177,17 +183,18 @@ class AndroidStudioDetectionResult {
     final rawSelected = json['selected'];
     final installs = rawInstalls is List
         ? rawInstalls
-            .whereType<Map<String, dynamic>>()
-            .map(AndroidStudioInstall.fromJson)
-            .where((item) => item.isValid)
-            .toList()
+              .whereType<Map<String, dynamic>>()
+              .map(AndroidStudioInstall.fromJson)
+              .where((item) => item.isValid)
+              .toList()
         : const <AndroidStudioInstall>[];
 
     AndroidStudioInstall? selected;
     if (rawSelected is Map<String, dynamic>) {
       final parsed = AndroidStudioInstall.fromJson(rawSelected);
       if (parsed.isValid) {
-        selected = installs.where((item) => item.path == parsed.path).firstOrNull ??
+        selected =
+            installs.where((item) => item.path == parsed.path).firstOrNull ??
             parsed;
       }
     }
@@ -195,18 +202,18 @@ class AndroidStudioDetectionResult {
     final selectionReason = selected == null
         ? null
         : json['selectionReason'] is String
-            ? AndroidStudioSelectionReason.values
-                .where((e) => e.name == json['selectionReason'])
-                .firstOrNull
-            : null;
+        ? AndroidStudioSelectionReason.values
+              .where((e) => e.name == json['selectionReason'])
+              .firstOrNull
+        : null;
 
     return AndroidStudioDetectionResult(
       installs: installs,
       residues: rawResidues is List
           ? rawResidues
-              .whereType<Map<String, dynamic>>()
-              .map(AndroidStudioResidue.fromJson)
-              .toList()
+                .whereType<Map<String, dynamic>>()
+                .map(AndroidStudioResidue.fromJson)
+                .toList()
           : const [],
       selected: selected,
       selectionReason: selectionReason,
@@ -214,9 +221,9 @@ class AndroidStudioDetectionResult {
   }
 
   Map<String, dynamic> toJson() => {
-        'installs': installs.map((e) => e.toJson()).toList(),
-        'residues': residues.map((e) => e.toJson()).toList(),
-        if (selected != null) 'selected': selected!.toJson(),
-        if (selectionReason != null) 'selectionReason': selectionReason!.name,
-      };
+    'installs': installs.map((e) => e.toJson()).toList(),
+    'residues': residues.map((e) => e.toJson()).toList(),
+    if (selected != null) 'selected': selected!.toJson(),
+    if (selectionReason != null) 'selectionReason': selectionReason!.name,
+  };
 }

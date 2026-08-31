@@ -694,6 +694,7 @@ foreach ($entry in ($found.Values | Sort-Object Path)) {
         launcherPath = $launcherPath
         channel = $channel
         source = $sources
+        versionSuffix = $versionSuffix
         sdkPath = if ($nsisReg) { $nsisReg.SdkPath } else { "" }
         installSdk = if ($nsisReg) { $nsisReg.InstallSdk } else { "" }
         installHaxm = if ($nsisReg) { $nsisReg.InstallHaxm } else { "" }

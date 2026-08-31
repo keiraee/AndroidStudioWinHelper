@@ -74,6 +74,7 @@ class HypervManager {
       scriptPath: scriptFile.absolute.path,
       extraArgs: ['-Action', enable ? 'Enable' : 'Disable'],
       onProgress: onProgress,
+      timeout: const Duration(seconds: 120),
     );
 
     if (result.jsonResult == null) {
@@ -109,6 +110,7 @@ class HypervManager {
       scriptPath: scriptFile.absolute.path,
       extraArgs: ['-Action', enable ? 'Enable' : 'Disable', '-FeatureName', featureName],
       onProgress: onProgress,
+      timeout: const Duration(seconds: 120),
     );
 
     if (result.jsonResult == null) {

@@ -43,8 +43,8 @@ class SectionHeader extends StatelessWidget {
           Text(
             trailing!,
             style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
         ],
         const Spacer(),
@@ -73,10 +73,15 @@ class ActionButton extends StatelessWidget {
     return FilledButton.icon(
       onPressed: onPressed,
       icon: loading
-          ? const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+          ? const ExcludeSemantics(
+              child: SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              ),
             )
           : Icon(icon, size: 18),
       label: Text(loading ? '进行中…' : label),
@@ -101,7 +106,9 @@ class ProgressPanel extends StatelessWidget {
         decoration: BoxDecoration(
           color: colorScheme.primaryContainer.withValues(alpha: 0.35),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: colorScheme.primary.withValues(alpha: 0.25)),
+          border: Border.all(
+            color: colorScheme.primary.withValues(alpha: 0.25),
+          ),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -116,35 +123,34 @@ class ProgressPanel extends StatelessWidget {
                 Text(
                   '${progress.percent}%',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: colorScheme.primary,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
+                    color: colorScheme.primary,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
                 ),
               ],
             ),
             const SizedBox(height: 14),
-            TweenAnimationBuilder<double>(
-              tween: Tween(begin: 0, end: value),
-              duration: const Duration(milliseconds: 350),
-              curve: Curves.easeOutCubic,
-              builder: (context, animatedValue, child) {
-                return ClipRRect(
-                  borderRadius: BorderRadius.circular(999),
-                  child: LinearProgressIndicator(
-                    value: animatedValue.clamp(0, 1),
-                    minHeight: 10,
-                    backgroundColor: colorScheme.surface,
-                  ),
-                );
-              },
+            ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: LinearProgressIndicator(
+                value: value.clamp(0, 1),
+                minHeight: 10,
+                backgroundColor: colorScheme.surface,
+              ),
             ),
             const SizedBox(height: 14),
-            Text(progress.message, style: Theme.of(context).textTheme.bodyLarge),
+            Text(
+              progress.message,
+              style: Theme.of(context).textTheme.bodyLarge,
+            ),
             if (progress.path.isNotEmpty) ...[
               const SizedBox(height: 8),
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
                 decoration: BoxDecoration(
                   color: colorScheme.surface,
                   borderRadius: BorderRadius.circular(10),
@@ -152,9 +158,9 @@ class ProgressPanel extends StatelessWidget {
                 child: SelectableText(
                   progress.path,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontFamily: 'Consolas',
-                        color: colorScheme.onSurfaceVariant,
-                      ),
+                    fontFamily: 'Consolas',
+                    color: colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             ],
@@ -200,18 +206,15 @@ class EmptyPanel extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           if (title != null) ...[
-            Text(
-              title!,
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
+            Text(title!, style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
           ],
           Text(
             hint,
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
+              color: colorScheme.onSurfaceVariant,
+            ),
           ),
           if (showAction) ...[
             const SizedBox(height: 20),
@@ -277,8 +280,11 @@ class WarningPanel extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(Icons.warning_amber_rounded,
-                    size: 18, color: colorScheme.tertiary),
+                Icon(
+                  Icons.warning_amber_rounded,
+                  size: 18,
+                  color: colorScheme.tertiary,
+                ),
                 const SizedBox(width: 8),
                 Text(
                   '部分数据源获取失败',
@@ -296,8 +302,9 @@ class WarningPanel extends StatelessWidget {
                 child: Text(
                   msg,
                   style: TextStyle(
-                    color:
-                        colorScheme.onTertiaryContainer.withValues(alpha: 0.8),
+                    color: colorScheme.onTertiaryContainer.withValues(
+                      alpha: 0.8,
+                    ),
                     fontSize: 13,
                   ),
                 ),
@@ -338,10 +345,9 @@ class CopyButton extends StatelessWidget {
         child: Icon(
           Icons.copy,
           size: 16,
-          color: Theme.of(context)
-              .colorScheme
-              .onSurfaceVariant
-              .withValues(alpha: 0.45),
+          color: Theme.of(
+            context,
+          ).colorScheme.onSurfaceVariant.withValues(alpha: 0.45),
         ),
       ),
     );
@@ -368,9 +374,9 @@ class InfoChipRow extends StatelessWidget {
             child: Text(
               label,
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    height: 1.4,
-                  ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                height: 1.4,
+              ),
             ),
           ),
           const SizedBox(width: 8),
@@ -378,9 +384,9 @@ class InfoChipRow extends StatelessWidget {
             child: SelectableText(
               value,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    fontFamily: 'Consolas',
-                    height: 1.4,
-                  ),
+                fontFamily: 'Consolas',
+                height: 1.4,
+              ),
             ),
           ),
           const SizedBox(width: 6),
@@ -409,8 +415,8 @@ class InfoRow extends StatelessWidget {
           Text(
             label,
             style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           SelectableText(value),
         ],
@@ -428,6 +434,7 @@ class FolderButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Tooltip(
       message: '打开文件夹',
+      excludeFromSemantics: true,
       child: InkWell(
         borderRadius: BorderRadius.circular(4),
         onTap: onTap,
@@ -463,8 +470,11 @@ class OpenFolderRow extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
           child: Row(
             children: [
-              Icon(Icons.folder_outlined, size: 18,
-                  color: colorScheme.onSurfaceVariant),
+              Icon(
+                Icons.folder_outlined,
+                size: 18,
+                color: colorScheme.onSurfaceVariant,
+              ),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
@@ -488,10 +498,10 @@ class OpenFolderRow extends StatelessWidget {
 }
 
 String channelDisplayName(String channel) => switch (channel) {
-      'release' => 'Stable',
-      'beta' => 'Beta',
-      'eap' => 'Canary',
-      'milestone' => 'Dev',
-      'archive' => '历史',
-      _ => channel,
-    };
+  'release' => 'Stable',
+  'beta' => 'Beta',
+  'eap' => 'Canary',
+  'milestone' => 'Dev',
+  'archive' => '历史',
+  _ => channel,
+};
