@@ -3,7 +3,7 @@
 ; 下载 Inno Setup: https://jrsoftware.org/isdl.php
 
 #define MyAppName "AndroidStudioWinHelper"
-#define MyAppVersion "1.5.3"
+#define MyAppVersion "1.5.4"
 #define MyAppPublisher "ASWH"
 #define MyAppExeName "androidstudiowinhelper.exe"
 
@@ -59,8 +59,8 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 ; 静默安装 VC++ Redistributable（如未安装）
 Filename: "{tmp}\VC_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "正在安装运行时组件..."; Flags: skipifnotsilent skipifdoesntexist waituntilterminated
 Filename: "{tmp}\VC_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "正在安装运行时组件..."; Flags: skipifsilent skipifdoesntexist waituntilterminated
-; 启动应用
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+; 启动应用（exe manifest 已 requireAdministrator，会弹出 UAC）
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent shellexec
 
 [UninstallDelete]
 ; 用户数据：设置、缓存、安装会话等

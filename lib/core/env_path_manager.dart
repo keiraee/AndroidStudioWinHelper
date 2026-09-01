@@ -50,6 +50,12 @@ class EnvPathManager {
     String scope = 'Machine',
     bool unset = false,
   }) async {
+    LogManager.instance.write(
+      'EnvPath',
+      unset
+          ? '删除 $scope/$variable'
+          : '写入 $scope/$variable=$value createDir=$createDir',
+    );
     return _elevatedWrite(
       scriptArgs: [
         '-Write',
@@ -75,6 +81,7 @@ class EnvPathManager {
 
   /// 选盘后提权创建 `{盘}:\Android`，确认该盘可写。
   Future<EnvPathWriteResult> prepareAndroidRoot(String rootPath) {
+    LogManager.instance.write('EnvPath', '准备 Android 根目录: $rootPath');
     return _elevatedWrite(
       scriptArgs: ['-Write', '-PrepareRoot', '-RootPath', rootPath],
     );
@@ -89,6 +96,11 @@ class EnvPathManager {
     if (!Platform.isWindows) {
       throw UnsupportedError('环境变量写入仅支持 Windows。');
     }
+    LogManager.instance.write(
+      'EnvPath',
+      '批量写入 Machine 变量: ${variables.entries.map((e) => '${e.key}=${e.value}').join('; ')}'
+      '${appendPath.isEmpty ? '' : ' | PATH追加: ${appendPath.join('; ')}'}',
+    );
     final payload = {
       'createDir': createDir,
       'variables': [
@@ -109,7 +121,19 @@ class EnvPathManager {
         scriptArgs: ['-Write', '-BatchFile', batchFile.path],
         createDir: false,
       );
-      return EnvPathBatchWriteResult.fromJson(raw);
+      final result = EnvPathBatchWriteResult.fromJson(raw);
+      for (final item in result.items) {
+        LogManager.instance.write(
+          'EnvPath',
+          '批量写入结果 ${item.variable}: success=${item.success} '
+          'value=${item.value} error=${item.error}',
+        );
+      }
+      LogManager.instance.write(
+        'EnvPath',
+        '批量写入完成 success=${result.success} error=${result.error}',
+      );
+      return result;
     } finally {
       try {
         batchFile.deleteSync();
@@ -138,6 +162,11 @@ class EnvPathManager {
     if (!Platform.isWindows || variables.isEmpty) {
       return const {};
     }
+
+    LogManager.instance.write(
+      'EnvPath',
+      '读取 $scope 变量: ${variables.join(', ')}',
+    );
 
     final quoted = variables.map((v) => "'$v'").join(',');
     final result = await Process.run(
@@ -172,9 +201,20 @@ if ($result.Count -eq 0) { '{}' } else { $result | ConvertTo-Json -Compress }
     try {
       final decoded = jsonDecode(stdout);
       if (decoded is! Map) return const {};
-      return decoded.map(
+      final mapped = decoded.map(
         (key, value) => MapEntry(key.toString(), value.toString()),
       );
+      if (mapped.isEmpty) {
+        LogManager.instance.write('EnvPath', '$scope 变量均未设置');
+      } else {
+        for (final entry in mapped.entries) {
+          LogManager.instance.write(
+            'EnvPath',
+            '读取 $scope/${entry.key}=${entry.value}',
+          );
+        }
+      }
+      return mapped;
     } catch (_) {
       return const {};
     }

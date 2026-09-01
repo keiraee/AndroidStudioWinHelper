@@ -13,7 +13,9 @@ param(
     [string]$ProgressFile,
 
     [Parameter(Mandatory = $true)]
-    [string]$ResultFile
+    [string]$ResultFile,
+
+    [string]$LogFile = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,6 +68,16 @@ function Write-ResultState {
     [System.IO.File]::WriteAllText($ResultFile, $json, $utf8)
 }
 
+function Write-ExtractLog {
+    param([string]$Message)
+    if ([string]::IsNullOrWhiteSpace($LogFile)) { return }
+    try {
+        $ts = Get-Date -Format 'HH:mm:ss.fff'
+        $line = "[ExtractScript $ts] $Message"
+        Add-Content -LiteralPath $LogFile -Value $line -Encoding UTF8
+    } catch { }
+}
+
 function Normalize-Dir([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
     $p = $Path.Trim().Replace('/', '\')
@@ -90,6 +102,8 @@ try {
         throw '未找到 7-Zip。请重新安装 AndroidStudioWinHelper（内置 7-Zip）或手动安装 7-Zip。'
     }
 
+    Write-ExtractLog "开始解包 installer=$installer installDir=$installDir sevenZip=$sevenZip"
+
     Write-ProgressState @{
         phase = 'listing'
         message = '正在扫描 NSIS 安装包（$_31_ 载荷）…'
@@ -107,21 +121,12 @@ try {
         throw '安装包中未找到 $_31_\ 载荷（可能不是官方 Android Studio NSIS 包）'
     }
 
-    $totalBytes = 0L
-    foreach ($line in $payloadLines) {
-        if ($line -match '\s+(\d+)\s+\d+\s+\$_31_\\') {
-            $totalBytes += [int64]$matches[1]
-        }
-    }
-
     Write-ProgressState @{
         phase = 'extracting'
         message = "正在解压 $totalFiles 个文件…"
         percent = 0
         totalFiles = $totalFiles
         extractedFiles = 0
-        totalBytes = $totalBytes
-        extractedBytes = 0
     }
 
     $tempRoot = Join-Path $env:TEMP ("aswh_nsis_extract_" + [Guid]::NewGuid().ToString('N'))
@@ -147,8 +152,6 @@ try {
                     percent = $pct
                     totalFiles = $totalFiles
                     extractedFiles = [int]([math]::Round($totalFiles * $pct / 100.0))
-                    totalBytes = $totalBytes
-                    extractedBytes = [int64]([math]::Round($totalBytes * $pct / 100.0))
                 }
             }
         }
@@ -160,8 +163,6 @@ try {
                 totalFiles = $totalFiles
                 extractedFiles = [int]([math]::Round($totalFiles * $lastPercent / 100.0))
                 currentFile = $matches[1]
-                totalBytes = $totalBytes
-                extractedBytes = [int64]([math]::Round($totalBytes * $lastPercent / 100.0))
             }
         }
     }
@@ -181,8 +182,6 @@ try {
         percent = 100
         totalFiles = $totalFiles
         extractedFiles = $totalFiles
-        totalBytes = $totalBytes
-        extractedBytes = $totalBytes
     }
 
     if (-not (Test-Path -LiteralPath $installDir)) {
@@ -237,8 +236,12 @@ try {
     # 同步 Machine 级 ANDROID_USER_HOME（解包阶段兜底，与安装向导一致）
     try {
         [Environment]::SetEnvironmentVariable('ANDROID_USER_HOME', $userSettings, 'Machine')
-        [Environment]::SetEnvironmentVariable('ANDROID_SDK_HOME', $userSettings, 'Machine')
+        Write-ExtractLog "写入 Machine ANDROID_USER_HOME=$userSettings"
+        # ANDROID_SDK_HOME 已废弃；与 ANDROID_USER_HOME 同时存在会导致 Studio 启动失败
+        [Environment]::SetEnvironmentVariable('ANDROID_SDK_HOME', $null, 'Machine')
+        Write-ExtractLog '清除 Machine ANDROID_SDK_HOME（已废弃）'
     } catch {
+        Write-ExtractLog "写入 ANDROID_USER_HOME 失败: $($_.Exception.Message)"
         # 无管理员权限时不阻断解包
     }
 
@@ -253,6 +256,7 @@ try {
     Set-ItemProperty -LiteralPath $productKey -Name 'InstallSdk' -Value '0' -Type String -Force
     Set-ItemProperty -LiteralPath $productKey -Name 'InstallHaxm' -Value '0' -Type String -Force
     Set-ItemProperty -LiteralPath $productKey -Name 'UserSettingsPath' -Value $userSettingsReg -Type ExpandString -Force
+    Write-ExtractLog "注册表 UserSettingsPath=$userSettingsReg SdkPath=$sdkPath Path=$homeReg"
 
     $uninstallKey = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Android Studio'
     if (-not (Test-Path -LiteralPath $uninstallKey)) {

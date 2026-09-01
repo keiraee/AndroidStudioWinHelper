@@ -6,6 +6,10 @@ import 'package:flutter/material.dart';
 
 void main() {
   LogManager.instance.init();
+  LogManager.instance.write(
+    'App',
+    '启动 AndroidStudioWinHelper，日志目录=${LogManager.instance.logDirPath}',
+  );
   LogManager.instance.cleanupOldLogs(keepDays: 30);
   Widget app = const AndroidStudioWinHelperApp();
   if (Platform.isWindows) {

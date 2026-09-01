@@ -113,6 +113,8 @@ class NsisDirectExtractor {
       progressFile,
       '-ResultFile',
       resultFile,
+      '-LogFile',
+      LogManager.instance.currentLogFilePath,
     ];
 
     LogManager.instance.write(
@@ -132,6 +134,10 @@ class NsisDirectExtractor {
               p.message != lastProgress!.message ||
               p.extractedFiles != lastProgress!.extractedFiles)) {
         lastProgress = p;
+        LogManager.instance.write(
+          _logTag,
+          '进度 phase=${p.phase} ${p.percent}% files=${p.extractedFiles}/${p.totalFiles} ${p.message}',
+        );
         if (!_progressController.isClosed) {
           _progressController.add(p);
         }

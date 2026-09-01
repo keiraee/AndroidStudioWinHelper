@@ -41,11 +41,19 @@ class AsFirstRunSdkConfig {
       final fromPreferred = preferred?[key]?.trim();
       if (fromPreferred != null && fromPreferred.isNotEmpty) {
         out[key] = fromPreferred;
+        LogManager.instance.write(
+          'FirstRunSdk',
+          '路径 $key 来自安装向导: $fromPreferred',
+        );
         continue;
       }
       final fromMachine = await readMachineEnv(key);
       if (fromMachine != null && fromMachine.isNotEmpty) {
         out[key] = fromMachine;
+        LogManager.instance.write(
+          'FirstRunSdk',
+          '路径 $key 来自 Machine 环境变量: $fromMachine',
+        );
       }
     }
     return out;

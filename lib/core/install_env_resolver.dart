@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:androidstudiowinhelper/core/android_studio_detector.dart';
 import 'package:androidstudiowinhelper/core/env_path_manager.dart';
 import 'package:androidstudiowinhelper/core/install_env_defaults.dart';
+import 'package:androidstudiowinhelper/core/log_manager.dart';
 
 /// 安装向导路径来源。
 enum InstallEnvPathSource {
@@ -37,6 +38,12 @@ class InstallEnvResolved {
 class InstallEnvResolver {
   const InstallEnvResolver._();
 
+  static const _logTag = 'InstallEnv';
+
+  static void _log(String message) {
+    LogManager.instance.write(_logTag, message);
+  }
+
   static Future<InstallEnvResolved> resolve({
     required EnvPathManager envManager,
   }) async {
@@ -64,6 +71,13 @@ class InstallEnvResolver {
     await _fillInstallHome(paths, sources);
     await _fillAndroidHome(paths, sources);
     _inferSiblingPaths(paths, sources);
+
+    _log('路径解析完成 hasExisting=${paths['AS_INSTALL_HOME'] != null && paths['ANDROID_HOME'] != null}');
+    for (final key in keys) {
+      final value = paths[key];
+      if (value == null || value.isEmpty) continue;
+      _log('  $key=${sources[key]?.name ?? '?'} -> $value');
+    }
 
     return InstallEnvResolved(
       paths: paths,

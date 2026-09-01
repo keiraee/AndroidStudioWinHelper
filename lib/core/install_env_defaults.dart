@@ -55,6 +55,50 @@ class InstallEnvDefaults {
     return '$letter:\\Android';
   }
 
+  /// 规范化目录路径（去尾部分隔符、统一反斜杠）。
+  static String normalizeDirectoryPath(String raw) {
+    var path = raw.trim().replaceAll('/', r'\');
+    while (path.endsWith(r'\') && path.length > 3) {
+      path = path.substring(0, path.length - 1);
+    }
+    return path;
+  }
+
+  /// 用户自选安装前缀；若已含 \\Android 则去掉，避免重复嵌套。
+  static String normalizeCustomInstallBase(String raw) {
+    var path = normalizeDirectoryPath(raw);
+    if (path.toUpperCase().endsWith(r'\ANDROID')) {
+      path = Directory(path).parent.path;
+    }
+    return path;
+  }
+
+  /// 是否为默认布局 `{盘符}:\Android`（无自定义前缀）。
+  static bool isDefaultAndroidRoot(String androidRoot) {
+    final normalized = normalizeDirectoryPath(androidRoot);
+    return RegExp(r'^[A-Za-z]:\\Android$', caseSensitive: false)
+        .hasMatch(normalized);
+  }
+
+  /// 从 AS_INSTALL_HOME 反推自定义前缀；默认布局返回 null。
+  static String? customInstallBaseFromInstallHome(String? installHome) {
+    final root = _androidRootFromInstallHome(installHome);
+    if (root == null || isDefaultAndroidRoot(root)) return null;
+    if (root.toUpperCase().endsWith(r'\ANDROID')) {
+      return Directory(root).parent.path;
+    }
+    return null;
+  }
+
+  /// 自定义前缀下的 Android 根目录，例如 `D:\ProgramSpace` → `D:\ProgramSpace\Android`。
+  static String androidRootFromCustomBase(String customInstallBase) {
+    final base = normalizeCustomInstallBase(customInstallBase);
+    if (base.isEmpty) {
+      throw ArgumentError('自定义安装根目录不能为空');
+    }
+    return '$base\\Android';
+  }
+
   /// 提权写入时使用：网络映射盘走 UNC，避免 UAC 后盘符不可见。
   static String androidRootFor(InstallDriveInfo drive) {
     if (drive.driveType == 4) {
@@ -73,8 +117,33 @@ class InstallEnvDefaults {
     return pathsForRoot(androidRoot(drive));
   }
 
-  static Map<String, String> pathsFor(InstallDriveInfo drive) {
-    return pathsForRoot(androidRootFor(drive));
+  static Map<String, String> pathsForDriveAndBase(
+    String drive, {
+    String? customInstallBase,
+  }) {
+    if (customInstallBase != null && customInstallBase.trim().isNotEmpty) {
+      return pathsForRoot(androidRootFromCustomBase(customInstallBase));
+    }
+    return pathsForDrive(drive);
+  }
+
+  static String androidRootForDrive(
+    InstallDriveInfo drive, {
+    String? customInstallBase,
+  }) {
+    if (customInstallBase != null && customInstallBase.trim().isNotEmpty) {
+      return androidRootFromCustomBase(customInstallBase);
+    }
+    return androidRootFor(drive);
+  }
+
+  static Map<String, String> pathsFor(
+    InstallDriveInfo drive, {
+    String? customInstallBase,
+  }) {
+    return pathsForRoot(
+      androidRootForDrive(drive, customInstallBase: customInstallBase),
+    );
   }
 
   static Map<String, String> pathsForRoot(String root) {

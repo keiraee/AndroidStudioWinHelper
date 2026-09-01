@@ -168,6 +168,12 @@ if ($Write) {
                     $readBack = [Environment]::GetEnvironmentVariable($name, "Machine")
                     if ($readBack -ne $val) { throw "回读不一致: 期望 $val , 实际 $readBack" }
                     $item.success = $true
+                    if ($name -eq 'ANDROID_USER_HOME') {
+                        [Environment]::SetEnvironmentVariable('ANDROID_SDK_HOME', $null, 'Machine')
+                    }
+                    if ($name -eq 'ANDROID_HOME') {
+                        [Environment]::SetEnvironmentVariable('ANDROID_SDK_ROOT', $null, 'Machine')
+                    }
                 } catch {
                     $allOk = $false
                     $item.error = $_.Exception.Message

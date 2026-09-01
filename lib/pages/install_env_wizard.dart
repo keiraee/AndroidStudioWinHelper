@@ -8,6 +8,7 @@ import 'package:androidstudiowinhelper/core/env_path_manager.dart';
 import 'package:androidstudiowinhelper/core/format_utils.dart';
 import 'package:androidstudiowinhelper/core/install_env_defaults.dart';
 import 'package:androidstudiowinhelper/core/install_env_resolver.dart';
+import 'package:androidstudiowinhelper/core/log_manager.dart';
 
 Future<Map<String, String>?> showInstallEnvWizard(
   BuildContext context, {
@@ -32,7 +33,12 @@ class InstallEnvWizardDialog extends StatefulWidget {
 }
 
 class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
+  static const _logTag = 'InstallEnvWizard';
   static const _pathKeys = InstallEnvDefaults.variables;
+
+  void _log(String message) {
+    LogManager.instance.write(_logTag, message);
+  }
 
   int _step = 0;
   bool _busy = false;
@@ -40,6 +46,8 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
   String _busyMessage = '';
   String? _error;
   String? _selectedLetter;
+  /// 自定义安装前缀，例如 `D:\ProgramSpace`；null 表示 `{盘符}:\Android`。
+  String? _customInstallBase;
   List<InstallDriveInfo> _drives = const [];
 
   /// Machine 级已存在的路径（安装向导 4 个变量）。
@@ -96,20 +104,43 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
       }
 
       if (resolved.hasExistingInstallSetup) {
-        _inferDriveFromPaths(resolved.paths['AS_INSTALL_HOME']);
+        _inferFromInstallHome(resolved.paths['AS_INSTALL_HOME']);
         _hasExistingSetup = true;
         _step = 1;
+        _log('检测到已有安装配置，跳过选盘步骤');
       }
-    } catch (_) {
-      // 读取失败时按新安装流程继续。
+    } catch (e) {
+      _log('读取已有路径失败，按新安装继续: $e');
     }
   }
 
-  void _inferDriveFromPaths(String? installHome) {
+  void _inferFromInstallHome(String? installHome) {
     if (installHome == null || installHome.length < 2 || installHome[1] != ':') {
       return;
     }
     _selectedLetter = installHome[0].toUpperCase();
+    _customInstallBase =
+        InstallEnvDefaults.customInstallBaseFromInstallHome(installHome);
+  }
+
+  String _androidRootForCurrentSelection() {
+    final drive = _selectedDrive;
+    if (drive == null) {
+      throw StateError('未选择磁盘');
+    }
+    return InstallEnvDefaults.androidRootForDrive(
+      drive,
+      customInstallBase: _customInstallBase,
+    );
+  }
+
+  Map<String, String> _defaultPathsForCurrentSelection() {
+    final drive = _selectedDrive;
+    if (drive == null) return const {};
+    return InstallEnvDefaults.pathsFor(
+      drive,
+      customInstallBase: _customInstallBase,
+    );
   }
 
   Future<void> _loadDrives() async {
@@ -147,6 +178,7 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
         _drives = found;
         _selectedLetter ??= preferred?.letter;
       });
+      _log('扫描磁盘 ${found.length} 个，默认选中 $_selectedLetter');
     } catch (e) {
       if (!mounted) return;
       final found = _fallbackLetters();
@@ -237,7 +269,10 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
   }
 
   void _applyDefaults(InstallDriveInfo drive, {bool onlyEmpty = false}) {
-    final paths = InstallEnvDefaults.pathsFor(drive);
+    final paths = InstallEnvDefaults.pathsFor(
+      drive,
+      customInstallBase: _customInstallBase,
+    );
     for (final key in _pathKeys) {
       if (onlyEmpty && _controllers[key]!.text.trim().isNotEmpty) continue;
       _controllers[key]!.text = paths[key] ?? '';
@@ -265,6 +300,7 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
 
     setState(() {
       _editUnlocked = true;
+      _customInstallBase = null;
       _error = null;
     });
     _applyDefaults(drive);
@@ -328,7 +364,8 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
       _error = null;
     });
     try {
-      final root = InstallEnvDefaults.androidRootFor(drive);
+      final root = _androidRootForCurrentSelection();
+      _log('选盘下一步: drive=$_selectedLetter customBase=$_customInstallBase root=$root');
       final preflight = _preflightWritableRoot(root);
       if (!mounted) return;
       if (preflight != null) {
@@ -346,6 +383,7 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
         return;
       }
       _applyDefaults(drive, onlyEmpty: _hasPrefilledPaths);
+      _log('Android 根目录就绪，进入路径确认步骤');
       setState(() => _step = 1);
     } catch (e) {
       if (!mounted) return;
@@ -499,6 +537,7 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
 
     final toWrite = _variablesToWrite(paths);
     if (toWrite.isEmpty) {
+      _log('无需写入环境变量，直接使用现有路径: $paths');
       if (!mounted) return;
       Navigator.of(context).pop(paths);
       return;
@@ -525,6 +564,7 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
     });
     try {
       await widget.envManager.backupCurrentConfig();
+      _log('用户确认写入，开始提权 batch: $toWrite');
       final result = await widget.envManager.writeBatch(
         variables: toWrite,
         appendPath: appendPath,
@@ -543,13 +583,44 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
         });
         return;
       }
+      _log('安装向导完成，路径已确认: $paths');
       Navigator.of(context).pop(paths);
     } catch (e) {
+      _log('安装向导写入异常: $e');
       if (!mounted) return;
       setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _pickCustomInstallBase() async {
+    final letter = _selectedLetter;
+    if (letter == null || _busy) return;
+
+    final picked = await FilePicker.getDirectoryPath(
+      dialogTitle: '选择安装根目录（将在此文件夹下创建 Android 子目录）',
+      initialDirectory: _customInstallBase ?? '$letter:\\',
+    );
+    if (picked == null || picked.isEmpty || !mounted) return;
+
+    if (picked.length >= 2 &&
+        picked[1] == ':' &&
+        picked[0].toUpperCase() != letter) {
+      setState(() => _error = '请选择 $letter: 盘下的目录');
+      return;
+    }
+
+    setState(() {
+      _customInstallBase = InstallEnvDefaults.normalizeCustomInstallBase(picked);
+      _error = null;
+    });
+    _log('用户选择自定义安装前缀: $_customInstallBase');
+  }
+
+  void _clearCustomInstallBase() {
+    if (_customInstallBase == null) return;
+    setState(() => _customInstallBase = null);
   }
 
   Future<void> _pickPath(String key) async {
@@ -564,7 +635,8 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
 
   String get _stepDescription {
     if (_step == 0) {
-      return '先选定 Android 工具链所在磁盘。下一步会请求管理员权限，在该盘创建 Android 目录并确认可写。';
+      return '先选定磁盘。默认在 {盘符}:\\Android 下创建各目录；也可选自定义文件夹（如 ProgramSpace），'
+          '则会在该文件夹下创建 Android\\ 子目录。下一步会请求管理员权限并确认可写。';
     }
     if (_usingExistingWithoutWrite) {
       return '检测到本机已有 Android 安装/SDK 路径（系统环境变量、注册表或已装 Studio），'
@@ -592,7 +664,7 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
         title: Text(_step == 0 ? '安装前准备：选择磁盘' : '安装前准备：确认路径'),
         content: SizedBox(
           width: 560,
-          height: _step == 0 ? 440 : 500,
+          height: _step == 0 ? 520 : 500,
           child: Stack(
             children: [
               Column(
@@ -682,11 +754,16 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
     if (_drives.isEmpty) {
       return const Text('没有找到可用的本地磁盘。');
     }
+    final previewPaths = _defaultPathsForCurrentSelection();
+    final letter = _selectedLetter;
     return RadioGroup<String>(
       groupValue: _selectedLetter,
       onChanged: (value) {
         if (value == null || _busy) return;
-        setState(() => _selectedLetter = value);
+        setState(() {
+          _selectedLetter = value;
+          _customInstallBase = null;
+        });
       },
       child: ListView(
         shrinkWrap: true,
@@ -699,6 +776,53 @@ class _InstallEnvWizardDialogState extends State<InstallEnvWizardDialog> {
                 '可用 ${FormatUtils.bytes(drive.freeBytes)} / 共 ${FormatUtils.bytes(drive.totalBytes)}',
               ),
             ),
+          if (letter != null) ...[
+            const Divider(height: 24),
+            Text(
+              '安装根目录',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _customInstallBase == null
+                  ? '默认：$letter:\\Android（各工具目录在其下）'
+                  : '已选：$_customInstallBase → 将创建 $_customInstallBase\\Android\\…',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: _busy ? null : _pickCustomInstallBase,
+                  icon: const Icon(Icons.folder_open, size: 18),
+                  label: const Text('选择自定义目录'),
+                ),
+                if (_customInstallBase != null)
+                  TextButton(
+                    onPressed: _busy ? null : _clearCustomInstallBase,
+                    child: const Text('恢复默认'),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              '路径预览',
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+            const SizedBox(height: 6),
+            for (final key in _pathKeys)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  '$key\n${previewPaths[key] ?? ''}',
+                  style: const TextStyle(fontFamily: 'Consolas', fontSize: 11),
+                ),
+              ),
+          ],
         ],
       ),
     );

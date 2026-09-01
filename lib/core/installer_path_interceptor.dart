@@ -317,27 +317,10 @@ class InstallerPathInterceptor {
         '文件 ${progress.extractedFiles}/${progress.totalFiles}',
       );
     }
-    if (progress.totalBytes > 0) {
-      parts.add(
-        '${_formatBytes(progress.extractedBytes)} / ${_formatBytes(progress.totalBytes)}',
-      );
-    }
     if (progress.currentFile != null && progress.currentFile!.isNotEmpty) {
       parts.add(progress.currentFile!);
     }
     return parts.isEmpty ? null : parts.join(' · ');
-  }
-
-  String _formatBytes(int bytes) {
-    if (bytes <= 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    var value = bytes.toDouble();
-    var unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit++;
-    }
-    return '${value.toStringAsFixed(value >= 10 || unit == 0 ? 0 : 1)} ${units[unit]}';
   }
 
   void _refreshLayerStatus({InstallerInterceptPhase? phase, String? message}) {

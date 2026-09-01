@@ -1,20 +1,27 @@
 import 'dart:io';
 
-/// 日志管理器：所有日志实时写入 log/ 目录，按日期分文件
+/// 日志管理器：写入 %LOCALAPPDATA%\AndroidStudioWinHelper\log，按日期分文件
 class LogManager {
   static final LogManager instance = LogManager._();
   LogManager._();
 
-  late final Directory _logDir;
+  late Directory _logDir = Directory.systemTemp;
   IOSink? _currentSink;
   String? _currentDate;
 
-  /// 初始化日志目录（与 exe 同级）
+  /// 初始化日志目录（用户 AppData，避免 Program Files 无写权限）
   void init() {
-    final exeDir = File(Platform.resolvedExecutable).parent.path;
-    _logDir = Directory('$exeDir/log');
-    if (!_logDir.existsSync()) {
-      _logDir.createSync(recursive: true);
+    final base = Platform.environment['LOCALAPPDATA']?.trim() ?? '';
+    final dir = base.isEmpty
+        ? Directory.systemTemp.createTempSync('aswh_logs')
+        : Directory('$base\\AndroidStudioWinHelper\\log');
+    _logDir = dir;
+    try {
+      if (!_logDir.existsSync()) {
+        _logDir.createSync(recursive: true);
+      }
+    } catch (_) {
+      // 兜底：无法创建时仍允许控制台输出
     }
   }
 
@@ -35,6 +42,7 @@ class LogManager {
     try {
       _ensureSink(dateStr);
       _currentSink?.writeln(line);
+      _currentSink?.flush();
     } catch (_) {}
   }
 
@@ -64,6 +72,14 @@ class LogManager {
 
   /// 获取当前日志目录路径
   String get logDirPath => _logDir.path;
+
+  /// 当天日志文件路径（供 PowerShell 子进程追加写入）
+  String get currentLogFilePath {
+    final now = DateTime.now();
+    final dateStr =
+        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    return '${_logDir.path}/$dateStr.log';
+  }
 
   /// 关闭日志写入
   void dispose() {

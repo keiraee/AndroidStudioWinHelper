@@ -100,18 +100,6 @@ class _InstallerInterceptDialogState extends State<_InstallerInterceptDialog> {
     };
   }
 
-  String _formatBytes(int bytes) {
-    if (bytes <= 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    var value = bytes.toDouble();
-    var unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit++;
-    }
-    return '${value.toStringAsFixed(value >= 10 || unit == 0 ? 0 : 1)} ${units[unit]}';
-  }
-
   Widget _ellipsisText({
     required String text,
     required TextStyle? style,
@@ -128,7 +116,6 @@ class _InstallerInterceptDialogState extends State<_InstallerInterceptDialog> {
   Widget _buildExtractProgress(ThemeData theme, ColorScheme colorScheme) {
     final percent = _status.extractPercent.clamp(0, 100);
     final hasFileStats = _status.extractTotalFiles > 0;
-    final hasByteStats = _status.extractTotalBytes > 0;
     final currentFile = _status.extractCurrentFile?.trim() ?? '';
     final targetDir = _status.nsisDirArg?.trim() ?? '';
 
@@ -175,8 +162,6 @@ class _InstallerInterceptDialogState extends State<_InstallerInterceptDialog> {
               '$percent%',
               if (hasFileStats)
                 '文件 ${_status.extractDoneFiles}/${_status.extractTotalFiles}',
-              if (hasByteStats)
-                '${_formatBytes(_status.extractDoneBytes)} / ${_formatBytes(_status.extractTotalBytes)}',
             ].join(' · '),
             style: theme.textTheme.bodySmall?.copyWith(
               fontFamily: 'Consolas',

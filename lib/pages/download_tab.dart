@@ -23,6 +23,7 @@ import 'package:androidstudiowinhelper/pages/download_progress_card.dart';
 import 'package:androidstudiowinhelper/core/as_first_run_sdk_config.dart';
 import 'package:androidstudiowinhelper/core/install_session.dart';
 import 'package:androidstudiowinhelper/core/installer_path_interceptor.dart';
+import 'package:androidstudiowinhelper/core/log_manager.dart';
 import 'package:androidstudiowinhelper/pages/install_env_wizard.dart';
 import 'package:androidstudiowinhelper/pages/installer_intercept_panel.dart';
 import 'package:androidstudiowinhelper/pages/shared_widgets.dart';
@@ -216,7 +217,15 @@ class _DownloadTabState extends State<DownloadTab> {
 
   Future<void> _runInstallerKey(String versionKey) async {
     final paths = await showInstallEnvWizard(context);
-    if (!mounted || paths == null) return;
+    if (!mounted || paths == null) {
+      LogManager.instance.write('Install', '用户取消安装向导 version=$versionKey');
+      return;
+    }
+
+    LogManager.instance.write(
+      'Install',
+      '安装向导确认 version=$versionKey paths=$paths',
+    );
 
     final task = _downloadManager.taskFor(versionKey);
     if (task == null || task.state != DownloadState.completed) return;
