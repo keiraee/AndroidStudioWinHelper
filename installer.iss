@@ -3,7 +3,7 @@
 ; 下载 Inno Setup: https://jrsoftware.org/isdl.php
 
 #define MyAppName "AndroidStudioWinHelper"
-#define MyAppVersion "1.4.3"
+#define MyAppVersion "1.5.3"
 #define MyAppPublisher "ASWH"
 #define MyAppExeName "androidstudiowinhelper.exe"
 
@@ -25,6 +25,9 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 PrivilegesRequired=admin
 WizardStyle=modern
 DisableProgramGroupPage=yes
+CloseApplications=force
+CloseApplicationsFilter={#MyAppExeName}
+RestartApplications=no
 
 ; 如需中文界面，从 https://jrsoftware.org/files/istrans/ 下载 ChineseSimplified.isl
 ; 放到 D:\Inno Setup 7\Languages\ 目录，然后取消下方注释:
@@ -34,8 +37,12 @@ DisableProgramGroupPage=yes
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+[InstallDelete]
+; 旧版单独 tools\7zip 目录（1.5.0 起 7z 已内嵌 flutter_assets）
+Type: filesandordirs; Name: "{app}\tools"
+
 [Files]
-; 复制整个 Release 目录
+; 复制整个 Release 目录（含 data\flutter_assets\tools\7zip）
 Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 ; VC++ 运行时 DLL 直接拷贝到安装目录（兜底，确保即使 VC++ 未安装也能运行）
 Source: "C:\Windows\System32\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
@@ -55,8 +62,47 @@ Filename: "{tmp}\VC_redist.x64.exe"; Parameters: "/install /quiet /norestart"; S
 ; 启动应用
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
+[UninstallDelete]
+; 用户数据：设置、缓存、安装会话等
+Type: filesandordirs; Name: "{localappdata}\AndroidStudioWinHelper"
+; 旧版可能残留的独立 7z 目录
+Type: filesandordirs; Name: "{app}\tools"
+
 [Code]
-// 检查 VC++ 2015-2022 Redistributable x64 是否已安装
+function KillOurApp(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Exec('taskkill.exe', '/F /IM {#MyAppExeName} /T', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  Result := True;
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  KillOurApp();
+  Result := True;
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  KillOurApp();
+  Result := True;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  AppDataDir: String;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    KillOurApp();
+    AppDataDir := ExpandConstant('{localappdata}\AndroidStudioWinHelper');
+    if DirExists(AppDataDir) then
+      DelTree(AppDataDir, True, True, True);
+  end;
+end;
+
 function IsVCRedistInstalled(): Boolean;
 var
   Installed: Cardinal;

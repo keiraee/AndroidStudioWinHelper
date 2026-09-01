@@ -103,11 +103,16 @@ class DownloadManager extends ChangeNotifier {
 
       if (DownloadShelf.isCompletedExe(name)) {
         if (_occupiedByActiveDownload(name)) continue;
-        final key = DownloadShelf.matchVersionKey(
-              fileName: name,
-              versions: versions,
-            ) ??
-            name;
+        final matched = DownloadShelf.matchVersionKey(
+          fileName: name,
+          versions: versions,
+        );
+        // 未匹配到版本列表时，仅保留文件名像 AS 安装包的 exe
+        if (matched == null &&
+            !DownloadShelf.looksLikeAndroidStudioInstaller(name)) {
+          continue;
+        }
+        final key = matched ?? name;
         if (_downloaders.containsKey(key)) continue;
         final size = file.lengthSync();
         _putRecovered(
@@ -130,11 +135,15 @@ class DownloadManager extends ChangeNotifier {
 
       final exeName = DownloadShelf.exeNameFromPart(name);
       if (_occupiedByActiveDownload(exeName)) continue;
-      final key = DownloadShelf.matchVersionKey(
-            fileName: exeName,
-            versions: versions,
-          ) ??
-          exeName;
+      final matchedPart = DownloadShelf.matchVersionKey(
+        fileName: exeName,
+        versions: versions,
+      );
+      if (matchedPart == null &&
+          !DownloadShelf.looksLikeAndroidStudioInstaller(exeName)) {
+        continue;
+      }
+      final key = matchedPart ?? exeName;
       if (_downloaders.containsKey(key)) continue;
 
       final meta = await MetaStore.load(file.path);
@@ -509,6 +518,7 @@ class DownloadManager extends ChangeNotifier {
     await Process.start('explorer', ['/select,', task.filePath]);
   }
 
+  /// 静默安装到指定目录。NSIS：`/S` 静默，`/D=` 必须为最后一个参数且不加引号。
   Future<Process?> runInstaller(
     String versionKey, {
     String? installHome,
@@ -516,41 +526,20 @@ class DownloadManager extends ChangeNotifier {
     final task = _tasks[versionKey];
     if (task == null || task.state != DownloadState.completed) return null;
 
-    final args = <String>[];
     final home = installHome
         ?.trim()
         .replaceAll('/', r'\')
         .replaceAll(RegExp(r'[\\/]+$'), '');
+    final args = <String>['/S'];
     if (home != null && home.isNotEmpty) {
-      // NSIS 官方：/D= 必须为最后一个参数，路径不加引号（可含空格）
       args.add('/D=$home');
     }
 
     LogManager.instance.write(
       'Download',
-      '[$versionKey] 启动安装程序: ${task.filePath}'
-      '${args.isEmpty ? '' : ' ${args.join(' ')}'}',
+      '[$versionKey] 静默启动安装程序: ${task.filePath} ${args.join(' ')}',
     );
     final workingDirectory = File(task.filePath).parent.path;
-
-    // 通过 cmd 启动，确保 /D= 传到 NSIS（避免 stub 丢参数）
-    if (home != null && home.isNotEmpty) {
-      final launcher = File(
-        '${Directory.systemTemp.path}\\aswh_install_${DateTime.now().millisecondsSinceEpoch}.cmd',
-      );
-      await launcher.writeAsString(
-        '@echo off\r\n'
-        'cd /d "$workingDirectory"\r\n'
-        '"${task.filePath}" /D=$home\r\n'
-        'exit /b %ERRORLEVEL%\r\n',
-      );
-      return Process.start(
-        'cmd.exe',
-        ['/c', launcher.path],
-        workingDirectory: workingDirectory,
-        mode: ProcessStartMode.normal,
-      );
-    }
 
     return Process.start(
       task.filePath,

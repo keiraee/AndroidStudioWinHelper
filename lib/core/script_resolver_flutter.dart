@@ -114,6 +114,14 @@ Future<String> resolveAlignInstallerPathsScript() {
   );
 }
 
+Future<String> resolveExtractAndroidStudioScript() {
+  return resolveScript(
+    fileName: 'extract-android-studio.ps1',
+    assetPath: 'scripts/extract-android-studio.ps1',
+    envVar: 'ASWH_EXTRACT_ANDROID_STUDIO_SCRIPT',
+  );
+}
+
 Iterable<String> _projectCandidates(String fileName) sync* {
   final cwd = Directory.current.path;
   yield _join(cwd, 'scripts/$fileName');

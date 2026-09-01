@@ -117,6 +117,69 @@ class EnvPathManager {
     }
   }
 
+  /// 读取指定变量在 Machine 作用域下的当前值（空字符串表示未设置）。
+  Future<Map<String, String>> readMachineVariables(
+    List<String> variables,
+  ) {
+    return _readScopedVariables(variables, 'Machine');
+  }
+
+  /// 读取指定变量在 User 作用域下的当前值。
+  Future<Map<String, String>> readUserVariables(
+    List<String> variables,
+  ) {
+    return _readScopedVariables(variables, 'User');
+  }
+
+  Future<Map<String, String>> _readScopedVariables(
+    List<String> variables,
+    String scope,
+  ) async {
+    if (!Platform.isWindows || variables.isEmpty) {
+      return const {};
+    }
+
+    final quoted = variables.map((v) => "'$v'").join(',');
+    final result = await Process.run(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-Command',
+        r'''
+$names = @(''' +
+            quoted +
+            r''')
+$scope = ''' +
+            "'$scope'" +
+            r'''
+$result = @{}
+foreach ($n in $names) {
+  $v = [Environment]::GetEnvironmentVariable($n, $scope)
+  if ($null -ne $v -and $v.Trim().Length -gt 0) {
+    $result[$n] = $v.Trim()
+  }
+}
+if ($result.Count -eq 0) { '{}' } else { $result | ConvertTo-Json -Compress }
+''',
+      ],
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
+    );
+
+    final stdout = (result.stdout as String? ?? '').replaceFirst('\uFEFF', '');
+    if (stdout.trim().isEmpty) return const {};
+
+    try {
+      final decoded = jsonDecode(stdout);
+      if (decoded is! Map) return const {};
+      return decoded.map(
+        (key, value) => MapEntry(key.toString(), value.toString()),
+      );
+    } catch (_) {
+      return const {};
+    }
+  }
+
   /// 保存当前环境配置到缓存（写入前调用）
   Future<void> backupCurrentConfig() async {
     try {

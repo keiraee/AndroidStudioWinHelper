@@ -64,6 +64,18 @@ class WindowsElevateResult {
   final String error;
 }
 
+class ElevatedLaunchResult {
+  const ElevatedLaunchResult({
+    required this.launched,
+    this.cancelled = false,
+    this.error = '',
+  });
+
+  final bool launched;
+  final bool cancelled;
+  final String error;
+}
+
 String quoteWindowsArg(String value) {
   if (value.isEmpty) return '""';
   if (!value.contains(RegExp(r'[\s"]'))) return value;
@@ -76,6 +88,58 @@ String windowsPowerShellExe() {
   final path = '$root\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
   if (File(path).existsSync()) return path;
   return 'powershell.exe';
+}
+
+/// 提权启动进程，不等待退出（用于安装向导 UI 后台 worker）。
+ElevatedLaunchResult launchElevated({
+  required String executable,
+  required String parameters,
+}) {
+  if (!Platform.isWindows) {
+    throw UnsupportedError('仅支持 Windows。');
+  }
+
+  final shell32 = DynamicLibrary.open('shell32.dll');
+  final kernel32 = DynamicLibrary.open('kernel32.dll');
+  final shellExecuteEx = shell32
+      .lookupFunction<_ShellExecuteExWNative, _ShellExecuteExWDart>(
+        'ShellExecuteExW',
+      );
+  final getLastError = kernel32
+      .lookupFunction<_GetLastErrorNative, _GetLastErrorDart>('GetLastError');
+
+  final info = calloc<_ShellExecuteInfoW>();
+  final verb = 'runas'.toNativeUtf16();
+  final file = executable.toNativeUtf16();
+  final params = parameters.toNativeUtf16();
+  try {
+    info.ref.cbSize = sizeOf<_ShellExecuteInfoW>();
+    info.ref.fMask = _seeMaskNoasync;
+    info.ref.hwnd = 0;
+    info.ref.lpVerb = verb;
+    info.ref.lpFile = file;
+    info.ref.lpParameters = params;
+    info.ref.lpDirectory = nullptr;
+    info.ref.nShow = _swHide;
+
+    final ok = shellExecuteEx(info) != 0;
+    if (!ok) {
+      final err = getLastError();
+      if (err == _errorCancelled) {
+        return ElevatedLaunchResult(launched: false, cancelled: true);
+      }
+      return ElevatedLaunchResult(
+        launched: false,
+        error: '无法请求管理员权限（错误 $err）。',
+      );
+    }
+    return const ElevatedLaunchResult(launched: true);
+  } finally {
+    calloc.free(verb);
+    calloc.free(file);
+    calloc.free(params);
+    calloc.free(info);
+  }
 }
 
 /// 用 runas 启动隐藏窗口进程并等待退出。

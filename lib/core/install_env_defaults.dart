@@ -1,9 +1,10 @@
+import 'dart:io';
+
 class InstallEnvDefaults {
   static const variables = <String>[
     'AS_INSTALL_HOME',
     'ANDROID_HOME',
     'ANDROID_USER_HOME',
-    'GRADLE_HOME',
     'GRADLE_USER_HOME',
   ];
 
@@ -11,7 +12,6 @@ class InstallEnvDefaults {
     'AS_INSTALL_HOME': 'Android Studio 安装目录',
     'ANDROID_HOME': 'Android SDK 安装目录',
     'ANDROID_USER_HOME': 'SDK 用户配置目录',
-    'GRADLE_HOME': 'Gradle 安装目录',
     'GRADLE_USER_HOME': 'Gradle 用户目录',
   };
 
@@ -23,14 +23,11 @@ class InstallEnvDefaults {
         '【官方】Android SDK 安装目录。很多命令行工具靠它定位 SDK；'
         '旧名 ANDROID_SDK_ROOT 已废弃。写入时会按官方建议，把其下 tools、tools\\bin、platform-tools 追加到系统 PATH。',
     'ANDROID_USER_HOME':
-        '【官方】SDK 工具的用户配置目录，默认是用户目录下的 .android；'
-        '存放调试密钥、SDK 许可、模拟器相关配置等。须与 ANDROID_HOME 分开，不是 SDK 安装目录。',
-    'GRADLE_HOME':
-        '【Gradle 官方】Gradle 发行版安装目录（可选）。'
-        'Android 项目多用 Gradle Wrapper，可不装独立 Gradle；若已安装，可把其 bin 加入 PATH。',
+        '【官方】SDK 用户配置目录，本工具默认强制为 Android 根目录下的 Sdk_userhome，'
+        '替代系统默认的 %USERPROFILE%\\.android，与 SDK 安装目录分开存放。',
     'GRADLE_USER_HOME':
-        '【Gradle 官方】Gradle 用户目录，默认是用户目录下的 .gradle；'
-        '存放全局配置、初始化脚本、依赖缓存、日志等，不是 Gradle 安装目录。',
+        '【Gradle 官方】Gradle 用户目录（依赖缓存、wrapper 分发包等），默认 %USERPROFILE%\\.gradle。'
+        '各 Android 项目通过 Gradle Wrapper 自带版本，无需单独安装 GRADLE_HOME。',
   };
 
   /// 官方建议追加到 PATH 的 ANDROID_HOME 子目录（相对路径）。
@@ -85,9 +82,25 @@ class InstallEnvDefaults {
       'AS_INSTALL_HOME': '$root\\AndroidStudio',
       'ANDROID_HOME': '$root\\Sdk',
       'ANDROID_USER_HOME': '$root\\Sdk_userhome',
-      'GRADLE_HOME': '$root\\Gradle',
       'GRADLE_USER_HOME': '$root\\GradleRepository',
     };
+  }
+
+  /// 由 AS_INSTALL_HOME 推导 Sdk_userhome（与 pathsForRoot 一致）。
+  static String? sdkUserHomeFromInstallHome(String? installHome) {
+    final root = _androidRootFromInstallHome(installHome);
+    if (root == null) return null;
+    return '$root\\Sdk_userhome';
+  }
+
+  static String? _androidRootFromInstallHome(String? installHome) {
+    if (installHome == null || installHome.trim().isEmpty) return null;
+    final normalized = installHome
+        .trim()
+        .replaceAll('/', r'\')
+        .replaceAll(RegExp(r'[\\]+$'), '');
+    if (!normalized.toUpperCase().endsWith(r'\ANDROIDSTUDIO')) return null;
+    return Directory(normalized).parent.path;
   }
 
   /// 根据 ANDROID_HOME 生成官方建议的 PATH 条目。

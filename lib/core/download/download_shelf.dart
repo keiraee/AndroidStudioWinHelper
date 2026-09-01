@@ -44,6 +44,20 @@ class DownloadShelf {
     return true;
   }
 
+  /// 文件名是否像官方 Android Studio Windows 安装包。
+  /// 避免把下载目录里其它 exe（VC_redist、本工具安装包等）当成 AS 安装包。
+  static bool looksLikeAndroidStudioInstaller(String fileName) {
+    final lower = fileName.toLowerCase().trim();
+    if (!isCompletedExe(lower)) return false;
+    // 官方/归档/Chocolatey 常见：android-studio-*.exe、android-studio-*-windows.exe
+    if (lower.contains('android-studio')) return true;
+    // 少数旧包：androidstudio-*-windows.exe（无连字符）
+    if (RegExp(r'^androidstudio.*windows\.exe$').hasMatch(lower)) {
+      return true;
+    }
+    return false;
+  }
+
   static bool isPartFile(String fileName) {
     final lower = fileName.toLowerCase();
     if (lower.endsWith('.part.meta')) return false;

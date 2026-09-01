@@ -2,13 +2,20 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:androidstudiowinhelper/core/as_first_run_sdk_config.dart';
+import 'package:androidstudiowinhelper/core/install_env_defaults.dart';
 import 'package:androidstudiowinhelper/core/install_session.dart';
+import 'package:androidstudiowinhelper/core/installer_intercept_worker.dart';
 import 'package:androidstudiowinhelper/core/installer_settings_tmp.dart';
 import 'package:androidstudiowinhelper/core/installer_ui_path.dart';
 import 'package:androidstudiowinhelper/core/log_manager.dart';
+import 'package:androidstudiowinhelper/core/nsis_direct_extractor.dart';
 import 'package:androidstudiowinhelper/core/studio_launcher.dart';
 
 enum InstallerInterceptPhase {
+  listingPayload,
+  extracting,
+  deploying,
+  writingRegistry,
   waitingWizard,
   alignedInstallDir,
   installDirMiss,
@@ -29,11 +36,83 @@ class InstallerInterceptStatus {
     required this.phase,
     required this.message,
     this.detail,
+    this.nsisDirArg,
+    this.registryPrimed = false,
+    this.uiInstallDirVerified = false,
+    this.visibleInstallPath,
+    this.extractPercent = 0,
+    this.extractTotalFiles = 0,
+    this.extractDoneFiles = 0,
+    this.extractCurrentFile,
+    this.extractTotalBytes = 0,
+    this.extractDoneBytes = 0,
+    this.androidUserHome,
   });
 
   final InstallerInterceptPhase phase;
   final String message;
   final String? detail;
+
+  /// 目标安装目录（7z 解包部署路径）。
+  final String? nsisDirArg;
+
+  /// 解包脚本是否已写入注册表 InstallLocation / Path。
+  final bool registryPrimed;
+
+  /// 安装向导 Edit 读回是否与目标一致（NSIS 模式遗留）。
+  final bool uiInstallDirVerified;
+
+  /// 安装向导界面上当前可见的安装路径（NSIS 模式遗留）。
+  final String? visibleInstallPath;
+
+  final int extractPercent;
+  final int extractTotalFiles;
+  final int extractDoneFiles;
+  final String? extractCurrentFile;
+  final int extractTotalBytes;
+  final int extractDoneBytes;
+  final String? androidUserHome;
+
+  InstallerInterceptStatus copyWith({
+    InstallerInterceptPhase? phase,
+    String? message,
+    String? detail,
+    String? nsisDirArg,
+    bool? registryPrimed,
+    bool? uiInstallDirVerified,
+    String? visibleInstallPath,
+    bool clearVisibleInstallPath = false,
+    int? extractPercent,
+    int? extractTotalFiles,
+    int? extractDoneFiles,
+    String? extractCurrentFile,
+    bool clearExtractCurrentFile = false,
+    int? extractTotalBytes,
+    int? extractDoneBytes,
+    String? androidUserHome,
+  }) {
+    return InstallerInterceptStatus(
+      phase: phase ?? this.phase,
+      message: message ?? this.message,
+      detail: detail ?? this.detail,
+      nsisDirArg: nsisDirArg ?? this.nsisDirArg,
+      registryPrimed: registryPrimed ?? this.registryPrimed,
+      uiInstallDirVerified:
+          uiInstallDirVerified ?? this.uiInstallDirVerified,
+      visibleInstallPath: clearVisibleInstallPath
+          ? null
+          : (visibleInstallPath ?? this.visibleInstallPath),
+      extractPercent: extractPercent ?? this.extractPercent,
+      extractTotalFiles: extractTotalFiles ?? this.extractTotalFiles,
+      extractDoneFiles: extractDoneFiles ?? this.extractDoneFiles,
+      extractCurrentFile: clearExtractCurrentFile
+          ? null
+          : (extractCurrentFile ?? this.extractCurrentFile),
+      extractTotalBytes: extractTotalBytes ?? this.extractTotalBytes,
+      extractDoneBytes: extractDoneBytes ?? this.extractDoneBytes,
+      androidUserHome: androidUserHome ?? this.androidUserHome,
+    );
+  }
 }
 
 /// 官方安装器路径拦截 + 装后启动 Studio 续装。
@@ -44,8 +123,8 @@ class InstallerPathInterceptor {
     required this.installHome,
     required this.androidHome,
     required this.androidUserHome,
-    this.installerProcess,
-    this.resumePhase,
+    required this.installerExePath,
+    this.registryPrimed = false,
   });
 
   static const _logTag = 'InstallerIntercept';
@@ -60,8 +139,8 @@ class InstallerPathInterceptor {
   final String installHome;
   final String androidHome;
   final String androidUserHome;
-  final Process? installerProcess;
-  final InstallSessionPhase? resumePhase;
+  final String installerExePath;
+  bool registryPrimed;
 
   final StreamController<InstallerInterceptStatus> _statusController =
       StreamController<InstallerInterceptStatus>.broadcast();
@@ -72,8 +151,13 @@ class InstallerPathInterceptor {
   bool _installDirMissReported = false;
   bool _installDirAlignedReported = false;
   bool _sdkTmpAlignedReported = false;
+  bool _uiInstallDirVerified = false;
+  String _visibleInstallPath = '';
+  InstallerInterceptWorker? _uiWorker;
   DateTime? _startedAt;
   DateTime _lastCorrectLogAt = DateTime.fromMillisecondsSinceEpoch(0);
+  InstallerInterceptStatus? _lastStatus;
+  NsisExtractProgress? _lastExtractProgress;
 
   static bool get hasActive => _active != null;
 
@@ -87,19 +171,30 @@ class InstallerPathInterceptor {
     required String versionKey,
     required String workingDirectory,
     required Map<String, String> paths,
-    required Process installerProcess,
+    required String installerExePath,
   }) async {
     if (_active != null) {
       throw StateError('已有安装路径拦截任务在运行。');
     }
 
+    final installHome = paths['AS_INSTALL_HOME']?.trim() ?? '';
+    final exe = installerExePath.trim();
+    if (exe.isEmpty || !File(exe).existsSync()) {
+      throw StateError('安装包不存在: $exe');
+    }
+
+    final androidUserHome = paths['ANDROID_USER_HOME']?.trim().isNotEmpty == true
+        ? paths['ANDROID_USER_HOME']!.trim()
+        : (InstallEnvDefaults.sdkUserHomeFromInstallHome(installHome) ?? '');
+
     final interceptor = InstallerPathInterceptor._(
       versionKey: versionKey,
       workingDirectory: workingDirectory,
-      installHome: paths['AS_INSTALL_HOME']?.trim() ?? '',
+      installHome: installHome,
       androidHome: paths['ANDROID_HOME']?.trim() ?? '',
-      androidUserHome: paths['ANDROID_USER_HOME']?.trim() ?? '',
-      installerProcess: installerProcess,
+      androidUserHome: androidUserHome,
+      installerExePath: File(exe).absolute.path,
+      registryPrimed: false,
     );
     _active = interceptor;
     await InstallSession.save(
@@ -110,51 +205,154 @@ class InstallerPathInterceptor {
         phase: InstallSessionPhase.watchingInstaller,
       ),
     );
-    unawaited(interceptor._runWithInstaller());
+    unawaited(interceptor._runDirectExtract());
     return interceptor;
   }
 
-  /// 从上次中断的会话继续（安装器可能已关闭）。
+  /// 不再支持从下载页恢复监视。
   static Future<InstallerPathInterceptor> resume({
     required InstallSession session,
-  }) async {
-    if (_active != null) {
-      throw StateError('已有安装路径拦截任务在运行。');
-    }
-    final interceptor = InstallerPathInterceptor._(
-      versionKey: session.versionKey,
-      workingDirectory: session.workingDirectory,
-      installHome: session.installHome ?? '',
-      androidHome: session.androidHome ?? '',
-      androidUserHome: session.paths['ANDROID_USER_HOME']?.trim() ?? '',
-      resumePhase: session.phase,
-    );
-    _active = interceptor;
-    unawaited(interceptor._runResume());
-    return interceptor;
-  }
-
-  Future<void> _runResume() async {
-    _log('继续安装监视，phase=${resumePhase?.name}');
-    try {
-      await _runPostInstall(resume: true);
-    } catch (e, st) {
-      _log('继续安装异常: $e\n$st');
-      await _saveSession(InstallSessionPhase.interrupted);
-      _emit(
-        InstallerInterceptStatus(
-          phase: InstallerInterceptPhase.error,
-          message: '继续安装失败：$e',
-        ),
-      );
-    } finally {
-      await _dispose();
-    }
+  }) {
+    throw UnsupportedError('已移除继续监视功能，请重新运行安装。');
   }
 
   void _emit(InstallerInterceptStatus status) {
     if (_stopped || _statusController.isClosed) return;
-    _statusController.add(status);
+    final enriched = InstallerInterceptStatus(
+      phase: status.phase,
+      message: status.message,
+      detail: status.detail,
+      nsisDirArg: installHome.isEmpty ? status.nsisDirArg : installHome,
+      registryPrimed: registryPrimed || status.registryPrimed,
+      uiInstallDirVerified: _uiInstallDirVerified,
+      visibleInstallPath: _visibleInstallPath.isEmpty
+          ? status.visibleInstallPath
+          : _visibleInstallPath,
+      extractPercent: status.extractPercent,
+      extractTotalFiles: status.extractTotalFiles,
+      extractDoneFiles: status.extractDoneFiles,
+      extractCurrentFile: status.extractCurrentFile,
+      extractTotalBytes: status.extractTotalBytes,
+      extractDoneBytes: status.extractDoneBytes,
+      androidUserHome: androidUserHome.isEmpty
+          ? status.androidUserHome
+          : androidUserHome,
+    );
+    _lastStatus = enriched;
+    _statusController.add(enriched);
+  }
+
+  InstallerInterceptStatus _withLayers({
+    required InstallerInterceptPhase phase,
+    required String message,
+    String? detail,
+    NsisExtractProgress? extract,
+  }) {
+    return InstallerInterceptStatus(
+      phase: phase,
+      message: message,
+      detail: detail,
+      nsisDirArg: installHome.isEmpty ? null : installHome,
+      registryPrimed: registryPrimed,
+      uiInstallDirVerified: _uiInstallDirVerified,
+      visibleInstallPath:
+          _visibleInstallPath.isEmpty ? null : _visibleInstallPath,
+      extractPercent: extract?.percent ?? _lastExtractProgress?.percent ?? 0,
+      extractTotalFiles:
+          extract?.totalFiles ?? _lastExtractProgress?.totalFiles ?? 0,
+      extractDoneFiles:
+          extract?.extractedFiles ?? _lastExtractProgress?.extractedFiles ?? 0,
+      extractCurrentFile:
+          extract?.currentFile ?? _lastExtractProgress?.currentFile,
+      extractTotalBytes:
+          extract?.totalBytes ?? _lastExtractProgress?.totalBytes ?? 0,
+      extractDoneBytes:
+          extract?.extractedBytes ?? _lastExtractProgress?.extractedBytes ?? 0,
+      androidUserHome: androidUserHome.isEmpty ? null : androidUserHome,
+    );
+  }
+
+  void _emitLayers({
+    required InstallerInterceptPhase phase,
+    required String message,
+    String? detail,
+    NsisExtractProgress? extract,
+  }) {
+    _emit(_withLayers(
+      phase: phase,
+      message: message,
+      detail: detail,
+      extract: extract,
+    ));
+  }
+
+  InstallerInterceptPhase _mapExtractPhase(String phase) {
+    return switch (phase) {
+      'listing' => InstallerInterceptPhase.listingPayload,
+      'extracting' => InstallerInterceptPhase.extracting,
+      'deploying' => InstallerInterceptPhase.deploying,
+      'registry' || 'shortcut' => InstallerInterceptPhase.writingRegistry,
+      'error' => InstallerInterceptPhase.error,
+      'done' => InstallerInterceptPhase.installerFinished,
+      _ => InstallerInterceptPhase.extracting,
+    };
+  }
+
+  void _onExtractProgress(NsisExtractProgress progress) {
+    _lastExtractProgress = progress;
+    _emit(
+      _withLayers(
+        phase: _mapExtractPhase(progress.phase),
+        message: progress.message,
+        detail: _formatExtractDetail(progress),
+        extract: progress,
+      ),
+    );
+  }
+
+  String? _formatExtractDetail(NsisExtractProgress progress) {
+    final parts = <String>[];
+    if (progress.totalFiles > 0) {
+      parts.add(
+        '文件 ${progress.extractedFiles}/${progress.totalFiles}',
+      );
+    }
+    if (progress.totalBytes > 0) {
+      parts.add(
+        '${_formatBytes(progress.extractedBytes)} / ${_formatBytes(progress.totalBytes)}',
+      );
+    }
+    if (progress.currentFile != null && progress.currentFile!.isNotEmpty) {
+      parts.add(progress.currentFile!);
+    }
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    var value = bytes.toDouble();
+    var unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit++;
+    }
+    return '${value.toStringAsFixed(value >= 10 || unit == 0 ? 0 : 1)} ${units[unit]}';
+  }
+
+  void _refreshLayerStatus({InstallerInterceptPhase? phase, String? message}) {
+    final current = _lastStatus;
+    if (current == null) return;
+    _emit(
+      current.copyWith(
+        phase: phase ?? current.phase,
+        message: message ?? current.message,
+        uiInstallDirVerified: _uiInstallDirVerified,
+        visibleInstallPath: _visibleInstallPath.isEmpty
+            ? null
+            : _visibleInstallPath,
+      ),
+    );
   }
 
   void _log(String message) {
@@ -168,61 +366,70 @@ class InstallerPathInterceptor {
     _log(message);
   }
 
-  Future<void> _runWithInstaller() async {
+  Future<void> _runDirectExtract() async {
     _startedAt = DateTime.now();
-    _emit(
-      const InstallerInterceptStatus(
-        phase: InstallerInterceptPhase.waitingWizard,
-        message: '正在监视官方安装向导…',
-      ),
+    _emitLayers(
+      phase: InstallerInterceptPhase.listingPayload,
+      message: installHome.isEmpty
+          ? '正在解包 Android Studio 安装包…'
+          : '正在解包并部署到 $installHome…',
+      detail: r'7-Zip 直接解压 $_31_ 载荷，绕过 NSIS /D=',
     );
-    _log('开始监视 NSIS 安装器，cwd=$workingDirectory');
+    _log(
+      '开始 7z 解包安装: exe=$installerExePath -> $installHome',
+    );
 
-    final process = installerProcess;
-    if (process == null) {
-      await _runPostInstall(resume: false);
-      return;
-    }
+    final extractor = NsisDirectExtractor();
+    StreamSubscription<NsisExtractProgress>? progressSub;
+    progressSub = extractor.progressStream.listen(_onExtractProgress);
 
     try {
-      final exitFuture = process.exitCode;
-      while (!_stopped) {
-        final done = await Future.any<bool>([
-          exitFuture.then((_) => true),
-          Future<bool>.delayed(_pollInterval, () => false),
-        ]);
-        if (done || _stopped) break;
-        await _pollInstallerUi();
-      }
+      await _writeTmpOnce(force: true);
+
+      final result = await extractor.extractAndDeploy(
+        installerPath: installerExePath,
+        installHome: installHome,
+        androidHome: androidHome,
+        androidUserHome: androidUserHome,
+      );
 
       if (_stopped) {
-        await _saveSession(InstallSessionPhase.interrupted);
         _emit(
           const InstallerInterceptStatus(
-            phase: InstallerInterceptPhase.interrupted,
-            message: '监视已暂停，可稍后从下载页继续',
+            phase: InstallerInterceptPhase.cancelled,
+            message: '安装已取消',
           ),
         );
-        _log('用户停止监视 NSIS 阶段');
         return;
       }
 
-      final exitCode = await exitFuture;
-      _log('NSIS 安装器进程已退出，exitCode=$exitCode（Finish 时常为非 0，不代表失败）');
-      await _runPostInstall(
-        resume: false,
-        installerExitCode: exitCode,
-      );
+      if (!result.success) {
+        _emit(
+          InstallerInterceptStatus(
+            phase: InstallerInterceptPhase.error,
+            message: '解包部署失败',
+            detail: result.error.isEmpty ? '未知错误' : result.error,
+          ),
+        );
+        _log('解包失败: ${result.error}');
+        await InstallSession.clear();
+        return;
+      }
+
+      registryPrimed = true;
+      _log('解包成功: ${result.totalFiles} 个文件 -> ${result.installHome}');
+      await _runPostInstall(resume: false);
     } catch (e, st) {
-      _log('拦截异常: $e\n$st');
-      await _saveSession(InstallSessionPhase.interrupted);
+      _log('解包异常: $e\n$st');
       _emit(
         InstallerInterceptStatus(
           phase: InstallerInterceptPhase.error,
-          message: '拦截异常：$e',
+          message: '解包异常：$e',
         ),
       );
+      await InstallSession.clear();
     } finally {
+      await progressSub.cancel();
       await _dispose();
     }
   }
@@ -238,22 +445,18 @@ class InstallerPathInterceptor {
     _emit(
       const InstallerInterceptStatus(
         phase: InstallerInterceptPhase.installerFinished,
-        message: '安装向导已关闭，正在验证安装结果（最多 20 秒）…',
+        message: '解包部署完成，正在验证安装结果（最多 20 秒）…',
       ),
     );
     final resolvedHome = await writer.resolveInstallHomeWithRetry();
     final installOk = resolvedHome != null;
 
     if (!installOk) {
-      await _saveSession(
-        InstallSessionPhase.interrupted,
-        installerExitCode: installerExitCode,
-        installVerified: false,
-      );
+      await InstallSession.clear();
       _emit(
         InstallerInterceptStatus(
-          phase: InstallerInterceptPhase.interrupted,
-          message: '未检测到有效安装，可重新运行安装程序或继续监视',
+          phase: InstallerInterceptPhase.error,
+          message: '未检测到有效安装，请重新运行安装',
           detail: installerExitCode == null
               ? null
               : 'installerExitCode=$installerExitCode',
@@ -311,13 +514,16 @@ class InstallerPathInterceptor {
         message: '未自动启动，正在打开 Android Studio…',
       ),
     );
-    final launched = await StudioLauncher.launch(resolvedHome);
+    final launched = await StudioLauncher.launch(
+      resolvedHome,
+      androidHome: androidHome,
+      androidUserHome: androidUserHome,
+    );
     if (!launched) {
-      await _saveSession(InstallSessionPhase.studioFirstRunPending);
       _emit(
         const InstallerInterceptStatus(
-          phase: InstallerInterceptPhase.interrupted,
-          message: '无法启动 Android Studio，请手动打开后继续',
+          phase: InstallerInterceptPhase.error,
+          message: '无法启动 Android Studio，请手动打开',
         ),
       );
       _log('启动 Studio 失败: $resolvedHome');
@@ -340,7 +546,7 @@ class InstallerPathInterceptor {
         message: launchedByUs
             ? '已启动 Android Studio，请在 IDE 中完成首次配置'
             : 'Android Studio 已运行，请在 IDE 中完成首次配置',
-        detail: 'NSIS 安装器与 IDE 首次向导是不同阶段',
+        detail: '解包部署与 IDE 首次向导是不同阶段',
       ),
     );
 
@@ -394,31 +600,46 @@ class InstallerPathInterceptor {
       installHome: installHome,
       androidHome: androidHome,
       androidUserHome: androidUserHome,
+      worker: _uiWorker,
     );
     final result = await ui.alignVisibleEdits();
+
+    if (result.registryPrimed) {
+      registryPrimed = true;
+    }
 
     if (result.foundInstallerWindow) {
       if (result.diagnostics.isNotEmpty) {
         _logThrottled('UI 诊断: ${result.diagnostics}');
       }
-        if (result.installDirVerified && !_installDirAlignedReported) {
+
+      if (result.visibleInstallPath.isNotEmpty) {
+        _visibleInstallPath = result.visibleInstallPath;
+      }
+
+      if (result.installDirVerified) {
+        _uiInstallDirVerified = true;
+        if (!_installDirAlignedReported) {
           _installDirAlignedReported = true;
-          _emit(
-            InstallerInterceptStatus(
-              phase: InstallerInterceptPhase.alignedInstallDir,
-              message: '已对齐安装目录 → $installHome',
-            ),
+          _emitLayers(
+            phase: InstallerInterceptPhase.alignedInstallDir,
+            message: '安装向导界面路径已验证 → $installHome',
+            detail: 'NSIS /D= 与界面读回一致',
           );
           _log('安装目录 UI 已验证: $installHome');
-        } else if (!result.installDirVerified &&
-            result.foundInstallerWindow &&
-            result.visibleInstallPath.isNotEmpty) {
-          _logThrottled(
-            '安装目录仍为 ${result.visibleInstallPath}，继续尝试纠正为 $installHome',
-          );
-        } else if (result.installDirVerified) {
-          _logThrottled('纠正安装目录为 $installHome');
+        } else {
+          _refreshLayerStatus();
         }
+      } else if (result.foundInstallerWindow &&
+          result.visibleInstallPath.isNotEmpty) {
+        _uiInstallDirVerified = false;
+        _logThrottled(
+          '界面仍显示 ${result.visibleInstallPath}，继续纠偏；实际安装以 /D=$installHome 为准',
+        );
+        _refreshLayerStatus(
+          message: 'NSIS /D= 已指定 $installHome，界面仍显示 ${result.visibleInstallPath}',
+        );
+      }
 
       if (result.sdkEditAligned || result.userHomeEditAligned) {
         _logThrottled(
@@ -430,11 +651,12 @@ class InstallerPathInterceptor {
         !_installDirAlignedReported &&
         DateTime.now().difference(_startedAt!) > _installDirGrace) {
       _installDirMissReported = true;
-      _emit(
-        const InstallerInterceptStatus(
-          phase: InstallerInterceptPhase.installDirMiss,
-          message: '未找到安装目录控件，已用 NSIS /D= 指定路径',
-        ),
+      _emitLayers(
+        phase: InstallerInterceptPhase.installDirMiss,
+        message: installHome.isEmpty
+            ? '未找到安装目录控件'
+            : '未找到安装目录控件，实际安装目录已指定',
+        detail: installHome.isEmpty ? null : installHome,
       );
     }
 
@@ -475,17 +697,11 @@ class InstallerPathInterceptor {
 
   void stopMonitoring() {
     _stopped = true;
-    unawaited(_saveSession(InstallSessionPhase.interrupted));
-    _emit(
-      const InstallerInterceptStatus(
-        phase: InstallerInterceptPhase.interrupted,
-        message: '监视已暂停，可从下载页点击「继续安装」',
-      ),
-    );
-    _log('用户停止监视');
   }
 
   Future<void> _dispose() async {
+    await _uiWorker?.dispose();
+    _uiWorker = null;
     if (!_statusController.isClosed) {
       await _statusController.close();
     }

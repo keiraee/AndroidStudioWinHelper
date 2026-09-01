@@ -39,10 +39,32 @@ class StudioLauncher {
     return null;
   }
 
-  static Future<bool> launch(String installHome) async {
+  static Future<bool> launch(
+    String installHome, {
+    String androidHome = '',
+    String androidUserHome = '',
+  }) async {
     final exe = await resolveStudioExe(installHome);
     if (exe == null) return false;
-    await Process.start(exe, [], mode: ProcessStartMode.detached);
+
+    final env = Map<String, String>.from(Platform.environment);
+    final sdk = androidHome.trim();
+    final userHome = androidUserHome.trim();
+    if (sdk.isNotEmpty) {
+      env['ANDROID_HOME'] = sdk;
+      env['ANDROID_SDK_ROOT'] = sdk;
+    }
+    if (userHome.isNotEmpty) {
+      env['ANDROID_USER_HOME'] = userHome;
+      env['ANDROID_SDK_HOME'] = userHome;
+    }
+
+    await Process.start(
+      exe,
+      [],
+      mode: ProcessStartMode.detached,
+      environment: env,
+    );
     return true;
   }
 }
