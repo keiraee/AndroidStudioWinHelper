@@ -11,7 +11,10 @@
     [switch]$Unset,
     [string]$BatchFile,
     [switch]$PrepareRoot,
-    [string]$RootPath
+    [string]$RootPath,
+    [switch]$MoveDir,
+    [string]$MoveFrom,
+    [string]$MoveTo
 )
 
 $utf8 = [System.Text.UTF8Encoding]::new($false)
@@ -107,8 +110,56 @@ function Write-ResultJson {
     }
 }
 
+function Get-AndroidRootDefault {
+    foreach ($v in @("AS_INSTALL_HOME", "ANDROID_HOME", "ANDROID_USER_HOME", "GRADLE_USER_HOME")) {
+        $val = [Environment]::GetEnvironmentVariable($v, "Machine")
+        if (-not $val) { $val = [Environment]::GetEnvironmentVariable($v, "User") }
+        if ([string]::IsNullOrWhiteSpace($val)) { continue }
+        $parent = Split-Path -Parent ($val.Trim().TrimEnd('\', '/'))
+        if ($parent) { return $parent }
+    }
+    $drive = if ($env:SystemDrive) { $env:SystemDrive } else { "C:" }
+    return (Join-Path $drive "Android")
+}
+
 # ==================== Write 模式 ====================
 if ($Write) {
+    if ($MoveDir) {
+        $result = @{ success = $false; variable = "MOVE"; value = $MoveTo; error = "" }
+        try {
+            if ([string]::IsNullOrWhiteSpace($MoveFrom)) { throw "未指定源目录" }
+            if ([string]::IsNullOrWhiteSpace($MoveTo)) { throw "未指定目标目录" }
+
+            $from = $MoveFrom.Trim().TrimEnd('\', '/')
+            $to = $MoveTo.Trim().TrimEnd('\', '/')
+            if ((Normalize-Path $from) -eq (Normalize-Path $to)) {
+                throw "源目录与目标目录相同"
+            }
+            if (-not (Test-Path -LiteralPath $from -PathType Container)) {
+                throw "源目录不存在: $from"
+            }
+            # 目标不能位于源目录内部，否则 robocopy 会无限递归
+            if ((Normalize-Path $to).StartsWith((Normalize-Path $from) + '\')) {
+                throw "目标目录不能位于源目录内部"
+            }
+            if (-not (Test-Path -LiteralPath $to)) {
+                New-Item -ItemType Directory -Force -Path $to | Out-Null
+            }
+
+            # /MOVE = 复制后删除源；/E 含空目录；/R:1 /W:1 避免长时间重试
+            & robocopy $from $to /E /MOVE /R:1 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+            $rc = $LASTEXITCODE
+            # robocopy: 0-7 视为成功，8+ 为失败
+            if ($rc -ge 8) { throw "robocopy 迁移失败，exitCode=$rc" }
+
+            $result.success = $true
+        } catch {
+            $result.error = $_.Exception.Message
+        }
+        Write-ResultJson (([PSCustomObject]$result) | ConvertTo-Json -Compress)
+        exit 0
+    }
+
     if ($PrepareRoot) {
         $result = @{ success = $false; variable = "ROOT"; value = $RootPath; error = "" }
         try {
@@ -174,6 +225,31 @@ if ($Write) {
                     if ($name -eq 'ANDROID_HOME') {
                         [Environment]::SetEnvironmentVariable('ANDROID_SDK_ROOT', $null, 'Machine')
                     }
+                } catch {
+                    $allOk = $false
+                    $item.error = $_.Exception.Message
+                }
+                $items += $item
+            }
+
+            foreach ($p in @($batch.removePath)) {
+                $pathVal = [string]$p
+                if ([string]::IsNullOrWhiteSpace($pathVal)) { continue }
+                $item = @{ variable = "PATH-"; value = $pathVal; success = $false; error = "" }
+                try {
+                    $systemPath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
+                    $currentParts = @()
+                    if ($systemPath) { $currentParts = $systemPath -split ";" | Where-Object { $_ -ne "" } }
+                    $toRemove = Normalize-Path $pathVal
+                    $kept = @($currentParts | Where-Object { (Normalize-Path $_) -ne $toRemove })
+                    if ($kept.Count -ne $currentParts.Count) {
+                        [Environment]::SetEnvironmentVariable("PATH", ($kept -join ";"), "Machine")
+                    }
+                    $readPath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
+                    $readParts = @()
+                    if ($readPath) { $readParts = $readPath -split ";" | ForEach-Object { Normalize-Path $_ } }
+                    if ($readParts -contains $toRemove) { throw "PATH 回读仍包含 $pathVal" }
+                    $item.success = $true
                 } catch {
                     $allOk = $false
                     $item.error = $_.Exception.Message
@@ -303,16 +379,23 @@ Write-EnvProgress -Percent 1 -Message "正在扫描注册表中的环境变量"
 $items = @()
 $pathEntries = @()
 
+# 建议默认值以「安装向导」使用的 Android 根目录为基准，保证两个模块口径一致
+$androidRoot = Get-AndroidRootDefault
+
 # 核心变量定义（带建议默认值和中文标签）
+# deprecated = 已废弃变量，只在实际存在时展示，并提示清除
 $coreVarDefs = @{
-    "ANDROID_HOME"      = @{ label = "Android SDK 路径"; default = (Join-Path $env:LOCALAPPDATA "Android\Sdk") }
-    "ANDROID_SDK_ROOT"  = @{ label = "Android SDK 根目录"; default = (Join-Path $env:LOCALAPPDATA "Android\Sdk") }
-    "GRADLE_HOME"       = @{ label = "Gradle 主目录"; default = "" }
-    "GRADLE_USER_HOME"  = @{ label = "Gradle 用户缓存目录"; default = (Join-Path $env:USERPROFILE ".gradle") }
+    "AS_INSTALL_HOME"   = @{ label = "Android Studio 安装目录"; default = (Join-Path $androidRoot "AndroidStudio"); primary = $true }
+    "ANDROID_HOME"      = @{ label = "Android SDK 路径"; default = (Join-Path $androidRoot "Sdk"); primary = $true }
+    "ANDROID_USER_HOME" = @{ label = "Android 用户配置目录（AVD / 首选项）"; default = (Join-Path $androidRoot "Sdk_userhome"); primary = $true }
+    "GRADLE_USER_HOME"  = @{ label = "Gradle 用户缓存目录"; default = (Join-Path $androidRoot "GradleRepository"); primary = $true }
     "JAVA_HOME"         = @{ label = "Java/JDK 安装路径"; default = "" }
-    "CLASSPATH"         = @{ label = "Java 类路径"; default = "" }
     "ANDROID_NDK_ROOT"  = @{ label = "Android NDK 路径"; default = "" }
     "ANDROID_NDK_HOME"  = @{ label = "Android NDK 路径 (备用)"; default = "" }
+    "CLASSPATH"         = @{ label = "Java 类路径"; default = ""; deprecated = $true; hint = "现代 Android/Gradle 工程不依赖 CLASSPATH，保留可能干扰构建" }
+    "ANDROID_SDK_ROOT"  = @{ label = "Android SDK 根目录（已废弃）"; default = ""; deprecated = $true; hint = "已被 ANDROID_HOME 取代，与 ANDROID_HOME 不一致时会导致 SDK 解析错误" }
+    "ANDROID_SDK_HOME"  = @{ label = "Android 首选项目录（已废弃）"; default = ""; deprecated = $true; hint = "已被 ANDROID_USER_HOME 取代，同时存在会让 Studio 启动报 AndroidLocationsException" }
+    "GRADLE_HOME"       = @{ label = "Gradle 主目录（已废弃）"; default = ""; deprecated = $true; hint = "Android Studio 使用内置/Wrapper 的 Gradle，不需要该变量" }
 }
 
 # 关键词过滤列表（不区分大小写，匹配变量名，仅安卓开发相关）
@@ -430,6 +513,8 @@ foreach ($name in $allVarNames) {
     $coreDef = $coreVarDefs[$name]
     $label = if ($coreDef) { $coreDef.label } else { $name }
     $default = if ($coreDef) { $coreDef.default } else { "" }
+    $isDeprecated = [bool]($coreDef -and $coreDef.deprecated)
+    $hint = if ($coreDef -and $coreDef.hint) { $coreDef.hint } else { "" }
 
     $matchedVars += [PSCustomObject]@{
         variable = $name
@@ -440,18 +525,23 @@ foreach ($name in $allVarNames) {
         sizeBytes = $sizeBytes
         sizeHuman = $sizeHuman
         suggestedDefault = $default
-        isCore = $isCore
+        isCore = [bool]($coreDef -and $coreDef.primary)
+        deprecated = $isDeprecated
+        deprecationHint = $hint
     }
 }
 
 # 补全：核心变量即使未设置也要展示（方便用户主动配置）
+# 已废弃变量不补全——没设置就不该出现在界面上诱导用户去设
 foreach ($coreName in $coreVarDefs.Keys) {
+    $coreDef = $coreVarDefs[$coreName]
+    if ($coreDef.deprecated) { continue }
+
     $alreadyAdded = $false
     foreach ($mv in $matchedVars) {
         if ($mv.variable -eq $coreName) { $alreadyAdded = $true; break }
     }
     if (-not $alreadyAdded) {
-        $coreDef = $coreVarDefs[$coreName]
         $matchedVars += [PSCustomObject]@{
             variable = $coreName
             label = $coreDef.label
@@ -461,13 +551,18 @@ foreach ($coreName in $coreVarDefs.Keys) {
             sizeBytes = 0
             sizeHuman = ""
             suggestedDefault = $coreDef.default
-            isCore = $true
+            isCore = [bool]$coreDef.primary
+            deprecated = $false
+            deprecationHint = ""
         }
     }
 }
 
-# 核心变量排前面，再按变量名排序
-$items = @($matchedVars | Sort-Object -Property @{Expression = { -not $_.isCore }}, @{Expression = { $_.variable }})
+# 推荐变量排前面，废弃变量排最后，同组按变量名排序
+$items = @($matchedVars | Sort-Object -Property `
+    @{Expression = { -not $_.isCore }}, `
+    @{Expression = { [bool]$_.deprecated }}, `
+    @{Expression = { $_.variable }})
 
 Write-EnvProgress -Percent 50 -Message "正在分析 PATH 中的 SDK 条目"
 
@@ -508,7 +603,6 @@ foreach ($sub in $pathSubDirs) {
 
 Write-EnvProgress -Percent 95 -Message "正在汇总结果"
 
-# 移除排序用的 isCore 字段
 $cleanItems = @($items | ForEach-Object {
     [PSCustomObject]@{
         variable = $_.variable
@@ -519,6 +613,9 @@ $cleanItems = @($items | ForEach-Object {
         sizeBytes = $_.sizeBytes
         sizeHuman = $_.sizeHuman
         suggestedDefault = $_.suggestedDefault
+        isCore = [bool]$_.isCore
+        deprecated = [bool]$_.deprecated
+        deprecationHint = [string]$_.deprecationHint
     }
 })
 

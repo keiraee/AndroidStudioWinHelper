@@ -251,7 +251,7 @@ class _DetectPageState extends State<DetectPage> {
                             _TabTile(
                               icon: Icons.tune_outlined,
                               title: '环境配置',
-                              subtitle: '检测并配置 ANDROID_HOME、GRADLE_HOME 等环境变量',
+                              subtitle: '检测并配置 ANDROID_HOME、ANDROID_USER_HOME 等环境变量，可迁移已有数据',
                               selected: _activeTab == _PageTab.envConfig,
                               onTap: () => _selectTab(_PageTab.envConfig),
                             ),

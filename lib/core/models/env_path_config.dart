@@ -8,6 +8,9 @@ class EnvPathItem {
     this.sizeBytes = 0,
     this.sizeHuman = '',
     this.suggestedDefault = '',
+    this.isCore = false,
+    this.deprecated = false,
+    this.deprecationHint = '',
   });
 
   final String variable;
@@ -19,6 +22,14 @@ class EnvPathItem {
   final String sizeHuman;
   final String suggestedDefault;
 
+  /// 与安装向导口径一致的推荐变量（AS_INSTALL_HOME / ANDROID_HOME /
+  /// ANDROID_USER_HOME / GRADLE_USER_HOME 等）。
+  final bool isCore;
+
+  /// 已废弃变量：只在系统里实际存在时才会返回，界面上只提供「清除」。
+  final bool deprecated;
+  final String deprecationHint;
+
   factory EnvPathItem.fromJson(Map<String, dynamic> json) {
     return EnvPathItem(
       variable: json['variable'] as String? ?? '',
@@ -29,6 +40,9 @@ class EnvPathItem {
       sizeBytes: _readInt(json['sizeBytes']),
       sizeHuman: json['sizeHuman'] as String? ?? '',
       suggestedDefault: json['suggestedDefault'] as String? ?? '',
+      isCore: json['isCore'] as bool? ?? false,
+      deprecated: json['deprecated'] as bool? ?? false,
+      deprecationHint: json['deprecationHint'] as String? ?? '',
     );
   }
 
@@ -41,6 +55,9 @@ class EnvPathItem {
     'sizeBytes': sizeBytes,
     'sizeHuman': sizeHuman,
     'suggestedDefault': suggestedDefault,
+    'isCore': isCore,
+    'deprecated': deprecated,
+    'deprecationHint': deprecationHint,
   };
 }
 

@@ -87,10 +87,22 @@ class EnvPathManager {
     );
   }
 
+  /// 提权把 [from] 目录的内容整体迁移到 [to]（robocopy /MOVE）。
+  Future<EnvPathWriteResult> moveDirectory({
+    required String from,
+    required String to,
+  }) {
+    LogManager.instance.write('EnvPath', '迁移目录: $from -> $to');
+    return _elevatedWrite(
+      scriptArgs: ['-Write', '-MoveDir', '-MoveFrom', from, '-MoveTo', to],
+    );
+  }
+
   /// 一次提权写入多个系统环境变量并回读校验。
   Future<EnvPathBatchWriteResult> writeBatch({
     required Map<String, String> variables,
     List<String> appendPath = const [],
+    List<String> removePath = const [],
     bool createDir = true,
   }) async {
     if (!Platform.isWindows) {
@@ -99,7 +111,8 @@ class EnvPathManager {
     LogManager.instance.write(
       'EnvPath',
       '批量写入 Machine 变量: ${variables.entries.map((e) => '${e.key}=${e.value}').join('; ')}'
-      '${appendPath.isEmpty ? '' : ' | PATH追加: ${appendPath.join('; ')}'}',
+      '${appendPath.isEmpty ? '' : ' | PATH追加: ${appendPath.join('; ')}'}'
+      '${removePath.isEmpty ? '' : ' | PATH移除: ${removePath.join('; ')}'}',
     );
     final payload = {
       'createDir': createDir,
@@ -107,6 +120,7 @@ class EnvPathManager {
         for (final e in variables.entries) {'name': e.key, 'value': e.value},
       ],
       'appendPath': appendPath,
+      'removePath': removePath,
     };
     final batchFile = File(
       '${Directory.systemTemp.path}\\aswh_env_batch_${DateTime.now().millisecondsSinceEpoch}.json',
@@ -244,8 +258,6 @@ if ($result.Count -eq 0) { '{}' } else { $result | ConvertTo-Json -Compress }
 
     final results = <EnvPathWriteResult>[];
     for (final item in backup.items) {
-      if (item.variable == 'GRADLE_USER_HOME') continue;
-
       try {
         // 备份时未设置：删除 ASWH 写入的 Machine 变量
         if (item.source == 'NotSet' || item.currentValue.isEmpty) {
